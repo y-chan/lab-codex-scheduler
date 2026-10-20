@@ -121,7 +121,7 @@ class DiscordBotConstructionTests(unittest.TestCase):
         )
         self.addCleanup(lambda: asyncio.run(bot.close()))
         names = {command.name for command in bot.tree.get_commands()}
-        self.assertTrue({"status", "queue", "job", "gpu", "logs", "cancel", "pause", "resume", "plan", "submit", "sweep",
+        self.assertTrue({"status", "queue", "job", "gpu", "logs", "cancel", "pause", "resume", "new-conversation", "plan", "submit", "sweep",
                          "report", "schedule", "depend", "plot", "instructions", "instructions-history",
                          "instructions-restore", "artifacts", "artifact", "audio-utterances", "compare-audio",
                          "tb-media"}
@@ -199,6 +199,96 @@ class DiscordBotConstructionTests(unittest.TestCase):
             self.assertEqual(db.execute(
                 "SELECT status,paused FROM jobs WHERE id=?", (spec.id,),
             ).fetchone()[:], ("running", 0))
+
+    def test_new_conversation_creates_thread_and_codex_session(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+
+        class FakeCodex:
+            running = True
+
+            async def close(self):
+                pass
+
+            async def new_thread(self):
+                return "codex-456"
+
+            async def run_turn(self, thread_id, prompt, **kwargs):
+                self.turn = (thread_id, prompt)
+                await kwargs["on_event"]({
+                    "method": "item/agentMessage/delta", "params": {"delta": "了解しました"},
+                })
+
+        codex = FakeCodex()
+        with patch("lab_codex_scheduler.discord_bot.CodexAppServer", return_value=codex):
+            bot = build_bot(
+                root / "state.sqlite3", root / "inbox", root / "conversation",
+                DiscordPolicy(user_ids=frozenset({"123"}), channel_ids=frozenset({"2"})),
+                root / "environments.toml",
+            )
+        self.addCleanup(lambda: asyncio.run(bot.close()))
+
+        class FakeProcessing:
+            async def edit(self, **kwargs):
+                pass
+
+        class FakeThread:
+            id = 456
+            parent_id = 2
+            mention = "<#456>"
+
+            def __init__(self, parent):
+                self.parent = parent
+                self.sent = []
+
+            async def send(self, content=None, **kwargs):
+                self.sent.append(content or kwargs.get("embed"))
+                return FakeProcessing()
+
+        class FakeTextChannel:
+            id = 2
+
+            def __init__(self):
+                self.thread = FakeThread(self)
+
+            async def create_thread(self, **kwargs):
+                self.create_args = kwargs
+                return self.thread
+
+        parent = FakeTextChannel()
+        user = SimpleNamespace(id=123, display_name="researcher")
+        response = SimpleNamespace(
+            defer=lambda **kwargs: asyncio.sleep(0),
+            is_done=lambda: True,
+        )
+        followup = SimpleNamespace(send=lambda *args, **kwargs: asyncio.sleep(0))
+        interaction = SimpleNamespace(
+            id=88, user=user, guild_id=1, channel_id=2, channel=parent,
+            guild=SimpleNamespace(id=1, filesize_limit=10_000_000),
+            response=response, followup=followup,
+        )
+        command = next(command for command in bot.tree.get_commands()
+                       if command.name == "new-conversation")
+        with patch.object(discord, "Thread", FakeThread), patch.object(
+            discord, "TextChannel", FakeTextChannel,
+        ):
+            asyncio.run(command.callback(interaction, "follow-up", "Run a new experiment"))
+
+        session = connect(root / "state.sqlite3")
+        try:
+            row = session.execute(
+                "SELECT discord_thread_id,starter_user_id,codex_thread_id "
+                "FROM discord_sessions WHERE discord_thread_id='456'"
+            ).fetchone()
+            inbox = session.execute(
+                "SELECT state FROM discord_inbox WHERE message_id='slash-88'"
+            ).fetchone()
+        finally:
+            session.close()
+        self.assertEqual(tuple(row), ("456", "123", "codex-456"))
+        self.assertEqual(inbox["state"], "processed")
+        self.assertEqual(codex.turn, ("codex-456", "Run a new experiment"))
 
     def test_completion_artifact_selection_is_bounded_and_skips_logs_and_checkpoints(self):
         items = [

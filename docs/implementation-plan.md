@@ -26,7 +26,7 @@
 
 状態：Bot、認可、Commands、スレッド会話処理、通知outbox worker、成果物取得、永続計画承認を実装。ローカルでClient構築を検証。Discordへの接続とGuild上のInteractions動作確認は未実施。
 
-実装：`/status`、`/gpu`、`/queue`、`/submit`、`/sweep`、`/job`、`/depend`、`/cancel`、`/pause`、`/resume`、`/schedule`、`/logs`、`/plot`、`/tb-media`、`/artifacts`、`/artifact`、`/audio-utterances`、`/compare-audio`、`/plan`、`/report`、`/instructions`、`/instructions-history`、`/instructions-restore`。許可IDによる認可、Message ID重複受付防止、既存Codex会話のmarker復旧、`LAB_CDS_DISCORD_REQUIRE_MENTION`による既存Thread限定のメンション省略、受信添付の署名/Guildサイズ確認、依頼者限定の停止・承認ボタン。開始/期限/終端/日次通知はoutboxを経由して依頼者へ限定メンション。
+実装：`/status`、`/gpu`、`/queue`、`/submit`、`/sweep`、`/job`、`/depend`、`/cancel`、`/pause`、`/resume`、`/schedule`、`/logs`、`/plot`、`/tb-media`、`/artifacts`、`/artifact`、`/audio-utterances`、`/compare-audio`、`/plan`、`/report`、`/new-conversation`、`/instructions`、`/instructions-history`、`/instructions-restore`。`/new-conversation`は許可されたText/Forum Channelまたはその配下のThreadから、最初の依頼付きで新しいDiscord/Codex会話を作ります。許可IDによる認可、Message ID重複受付防止、既存Codex会話のmarker復旧、`LAB_CDS_DISCORD_REQUIRE_MENTION`による既存Thread限定のメンション省略、受信添付の署名/Guildサイズ確認、依頼者限定の停止・承認ボタン。開始/期限/終端/日次通知はoutboxを経由して依頼者へ限定メンション。
 
 成果物取得はジョブUUID配下、登録環境のartifact_dir、拡張子allowlist、サイズ制限、symlink拒否を適用。Checkpointは許可していません。成功通知では許可済み小型成果物を最大3件、自動添付します。
 

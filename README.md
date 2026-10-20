@@ -87,9 +87,11 @@ uv run lab-codex-scheduler discord \
   --config ~/.config/lab-codex-scheduler/environments.toml
 ```
 
-利用可能な主な操作は `/status`、`/gpu`、`/queue`、`/submit`、`/sweep`、`/job`、`/depend`、`/cancel`、`/pause`、`/resume`、`/schedule`、`/logs`、`/plot`、`/tb-media`、`/artifacts`、`/artifact`、`/audio-utterances`、`/compare-audio`、`/plan`、`/report`、`/instructions`、`/instructions-history`、`/instructions-restore` です。`/pause`と`/resume`は依頼者自身の待機中・実行中ジョブに使えます。実行中ジョブはジョブ固有のプロセスだけを一時停止し、GPU予約を保持します。`/plan` は登録済み環境から構造化案を作りますが、ボタン承認までジョブを作成しません。承認後はGPU待ちキューへ登録されます。計画ボタンはBot再起動後もpending状態から復元します。
+利用可能な主な操作は `/status`、`/gpu`、`/queue`、`/submit`、`/sweep`、`/job`、`/depend`、`/cancel`、`/pause`、`/resume`、`/schedule`、`/logs`、`/plot`、`/tb-media`、`/artifacts`、`/artifact`、`/audio-utterances`、`/compare-audio`、`/plan`、`/report`、`/new-conversation`、`/instructions`、`/instructions-history`、`/instructions-restore` です。`/pause`と`/resume`は依頼者自身の待機中・実行中ジョブに使えます。実行中ジョブはジョブ固有のプロセスだけを一時停止し、GPU予約を保持します。`/plan` は登録済み環境から構造化案を作りますが、ボタン承認までジョブを作成しません。承認後はGPU待ちキューへ登録されます。計画ボタンはBot再起動後もpending状態から復元します。
 
 通常Channelのメンションはスレッドを作り、登録済みDiscord ThreadとCodex Threadの対応を再利用します。Botが投稿した識別Embedから履歴復旧を試み、複数IDが見つかるなど曖昧な場合は別会話へ接続せず、元の依頼者だけが押せる確認ボタンから新しいCodex会話を開始できます。CodexのTurnはThread単位に直列化し、進捗をDiscordへ表示します。ファイル操作承認は依頼者限定UIを使い、権限拡張要求は拒否します。
+
+長い会話を切り替えるときは、許可されたTextまたはForum Channelで `/new-conversation title prompt` を実行します。既存Thread内から実行した場合は同じ親Channelに新しいThreadを作ります。最初の依頼を指定すると、新しいDiscord ThreadとCodex Threadを作成して会話を開始します。
 
 会話用AGENTS.mdはデータディレクトリの `conversation/AGENTS.md` に一度だけ生成されます。ユーザーが直接編集でき、初期化では既存ファイルを上書きしません。添付は専用inboxへ検証保存し、既定10 MiB上限とGuildの実ファイルサイズ上限の小さい方を適用します。成果物取得は登録環境の `artifact_dir/<job UUID>/` 配下に限定し、Checkpoint等と許可外形式、設定上限を超えるファイルは取得しません。成功通知では画像・音声・CSV・JSON・Markdownから最大3件の小さな成果物を自動添付し、容量超過や接続失敗時はテキスト通知を優先します。
 

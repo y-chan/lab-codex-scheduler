@@ -14,6 +14,7 @@ from pathlib import Path
 import shlex
 import tempfile
 import time
+from types import SimpleNamespace
 import uuid
 
 import discord
@@ -471,9 +472,13 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
     message_locks: dict[str, asyncio.Lock] = {}
 
     async def authorize(interaction: discord.Interaction) -> bool:
-        if access.allows(str(interaction.user.id),
-                         str(interaction.guild_id) if interaction.guild_id else None,
-                         str(interaction.channel_id)):
+        user_id = str(interaction.user.id)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else None
+        channel_ids = {str(interaction.channel_id)}
+        channel = getattr(interaction, "channel", None)
+        if isinstance(channel, discord.Thread) and channel.parent_id:
+            channel_ids.add(str(channel.parent_id))
+        if any(access.allows(user_id, guild_id, channel_id) for channel_id in channel_ids):
             return True
         if not interaction.response.is_done():
             await interaction.response.send_message("この操作は許可されていません。", ephemeral=True)
@@ -628,6 +633,71 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
             f"ジョブ集計: {summary}\n記録済みGPU: {gpu_count}\n直近のジョブ:\n{recent_text}",
             ephemeral=True,
         )
+
+    @bot.tree.command(name="new-conversation", description="新しいDiscord/Codex研究会話を開始")
+    @app_commands.describe(
+        title="新しいDiscordスレッドのタイトル（100文字以内）",
+        prompt="新しいCodex会話へ最初に送る依頼（1800文字以内）",
+    )
+    async def new_conversation(interaction: discord.Interaction, title: str, prompt: str) -> None:
+        if not await authorize(interaction):
+            return
+        title = title.strip()
+        prompt = prompt.strip()
+        if not title or len(title) > 100 or not prompt or len(prompt) > 1800:
+            await interaction.response.send_message(
+                "titleは1〜100文字、promptは1〜1800文字で指定してください。", ephemeral=True,
+            )
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message("Guild内でのみ利用できます。", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            if not codex.running:
+                await codex.start()
+            parent = interaction.channel
+            if isinstance(parent, discord.Thread):
+                parent_id = str(parent.parent_id or "")
+                parent = parent.parent
+                if parent is None and parent_id:
+                    parent = await bot.fetch_channel(int(parent_id))
+            if isinstance(parent, discord.ForumChannel):
+                created = await parent.create_thread(
+                    name=title,
+                    auto_archive_duration=1440,
+                    content=f"{interaction.user.display_name}からの新しい会話です。\n\n{prompt}",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                thread = created.thread
+            elif isinstance(parent, discord.TextChannel):
+                thread = await parent.create_thread(
+                    name=title, auto_archive_duration=1440,
+                    type=discord.ChannelType.public_thread,
+                )
+                await thread.send(
+                    f"{interaction.user.display_name}からの新しい会話です。\n\n{prompt}",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            else:
+                raise ValueError("TextまたはForum Channelで利用してください")
+            await interaction.followup.send(
+                f"新しい会話スレッドを作成しました: {thread.mention}", ephemeral=True,
+            )
+            synthetic_message = SimpleNamespace(
+                id=f"slash-{interaction.id}", author=interaction.user, channel=thread,
+                guild=interaction.guild, content=prompt, attachments=[],
+            )
+            lock = message_locks.setdefault(str(thread.id), asyncio.Lock())
+            async with lock:
+                await handle_mention(
+                    synthetic_message, force_new_codex_thread=True, resolved_thread=thread,
+                )
+        except Exception as exc:
+            LOG.exception("Could not start a manual Discord conversation")
+            await interaction.followup.send(
+                f"新しい会話を開始できませんでした: {str(exc)[:800]}", ephemeral=True,
+            )
 
     @bot.tree.command(name="gpu", description="直近に記録されたGPU利用状況を表示")
     async def gpu(interaction: discord.Interaction) -> None:
@@ -1544,9 +1614,12 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
     async def on_message(message: discord.Message) -> None:
         if message.author.bot or bot.user is None:
             return
-        if not access.allows(str(message.author.id),
-                             str(message.guild.id) if message.guild else None,
-                             str(message.channel.id)):
+        channel_ids = {str(message.channel.id)}
+        if isinstance(message.channel, discord.Thread) and message.channel.parent_id:
+            channel_ids.add(str(message.channel.parent_id))
+        if not any(access.allows(
+                str(message.author.id), str(message.guild.id) if message.guild else None, channel_id,
+        ) for channel_id in channel_ids):
             return
         in_thread = isinstance(message.channel, discord.Thread)
         has_session = bool(in_thread and store.get_session(str(message.channel.id)))
@@ -1564,6 +1637,7 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
     async def handle_mention(
         message: discord.Message, *, force_new_codex_thread: bool = False,
         retry_event: bool = False, replace_codex_thread_id: str | None = None,
+        resolved_thread: discord.Thread | None = None,
     ) -> None:
         thread_id: str
         parent_id: str
@@ -1728,7 +1802,7 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
                     "UPDATE discord_inbox SET payload_json=? WHERE message_id=?",
                     (json.dumps(event_payload, ensure_ascii=False), str(message.id)),
                 )
-            thread = bot.get_channel(int(thread_id))
+            thread = resolved_thread or bot.get_channel(int(thread_id))
             if not isinstance(thread, discord.Thread):
                 raise RuntimeError("Discord Threadを再取得できません")
             if created_codex_thread:
