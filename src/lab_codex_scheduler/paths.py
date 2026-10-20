@@ -12,9 +12,10 @@ def tensorboard_cache_dir() -> Path:
     if configured:
         path = Path(configured).expanduser()
     else:
-        state_home = Path(
-            os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")
-        ).expanduser()
+        state_value = os.environ.get("XDG_STATE_HOME")
+        state_home = (
+            Path(state_value).expanduser() if state_value else Path.home() / ".local/state"
+        )
         path = state_home / "lab-codex-scheduler/tensorboard"
     if not path.is_absolute():
         raise ValueError("TensorBoard cache root must be an absolute path")

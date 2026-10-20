@@ -855,6 +855,7 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
                 raise ValueError("TensorBoard cache rootはsymlinkでない絶対パスにしてください")
             root.mkdir(parents=True, exist_ok=True, mode=0o700)
             resolved_root = root.resolve(strict=True)
+            resolved_root.chmod(0o700)
             logdir = root / str(uuid.UUID(job_id))
             if logdir.is_symlink() or not logdir.is_dir() or not logdir.resolve().is_relative_to(resolved_root):
                 raise ValueError("指定ジョブのTensorBoard cacheが見つかりません")
