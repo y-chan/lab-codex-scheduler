@@ -76,7 +76,7 @@ DB対応がないスレッドは別のCodex会話へ自動接続しません。B
 
 長期会話を手動で切り替える`/new-conversation title prompt`を用意します。Text/Forum Channelから新規Threadを作成し、既存Thread内から実行した場合は親Channelに新しいThreadを作ります。Discord Interaction IDをThread作成前にinboxへ記録し、再配送では二つ目のThreadを作りません。指定された初回依頼と新しいCodex Threadの対応をSQLiteへ保存してからTurnを開始します。
 
-メンション必須は既定です。`LAB_CDS_DISCORD_REQUIRE_MENTION=false`の場合も、DBにCodex対応を持つ既存Discord Threadだけを対象とし、未登録ThreadやForum投稿には自動参加しません。TurnはCodex Threadごとに直列化します。Discord Message IDを一意キーに処理済みイベントへ記録し、追加メッセージは待ち行列に入れます。Codex app-serverはstdioのJSONL JSON-RPCを初期transportにします。Thread IDを永続化し、再起動後に `thread/resume` を呼びます。app-server仕様変更は実装時にプロトコル版と公式スキーマを再確認します。
+メンション必須は既定です。`LAB_CDS_DISCORD_REQUIRE_MENTION=false`の場合も、DBにCodex対応を持つ既存Discord Threadだけを対象とし、未登録ThreadやForum投稿には自動参加しません。TurnはCodex Threadごとに直列化します。Discord Message IDを一意キーにし、Thread lockを待つ前に`discord_inbox`へ記録します。Bot起動後は未処理messageをDiscordから再取得し、依頼者・Guild・Channelを再検証して順番に処理します。イベントは外部操作を始める前に`processing`へ移します。再起動時に`processing`だった依頼は処理結果不明として依頼者へ通知し、重複処理を避けるため自動再送しません。Slash CommandはInteraction ID一意制約でも重複処理を拒否します。Codex app-serverはstdioのJSONL JSON-RPCを初期transportにします。Thread IDを永続化し、再起動後に `thread/resume` を呼びます。app-server仕様変更は実装時にプロトコル版と公式スキーマを再確認します。
 
 ## Discord通知と添付
 

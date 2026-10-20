@@ -67,13 +67,13 @@ class DiscordBotConstructionTests(unittest.TestCase):
                 DiscordPolicy(user_ids=frozenset({"123"})),
             )
         self.addCleanup(lambda: asyncio.run(bot.close()))
-        sent = {}
+        sent = []
         stopped = False
 
         class Destination:
             async def send(self, content, **kwargs):
                 nonlocal stopped
-                sent.update(kwargs)
+                sent.append((content, kwargs))
                 stopped = True
 
         destination = Destination()
@@ -84,6 +84,13 @@ class DiscordBotConstructionTests(unittest.TestCase):
         store = DiscordStore(root / "state.sqlite3")
         store.enqueue_notification(
             event_key, "456", {"requester_id": "123", "status": "failed", "job_id": "job-123"},
+        )
+        recovery_key = "discord-inbox-recovery:987654321"
+        store.enqueue_notification(
+            recovery_key, "456", {
+                "kind": "inbox_recovery", "requester_id": "123",
+                "message": "依頼結果が不明です。",
+            },
         )
 
         async def deliver_once():
@@ -98,13 +105,19 @@ class DiscordBotConstructionTests(unittest.TestCase):
                 pass
 
         asyncio.run(deliver_once())
-        self.assertEqual(sent["nonce"], _notification_nonce(event_key))
+        by_nonce = {kwargs["nonce"]: content for content, kwargs in sent}
+        self.assertIn("異常終了", by_nonce[_notification_nonce(event_key)])
+        self.assertIn("依頼結果が不明です。", by_nonce[_notification_nonce(recovery_key)])
         self.assertEqual(store.claim_notifications(), [])
         with connect(root / "state.sqlite3") as db:
-            state = db.execute(
-                "SELECT state FROM notifications WHERE event_key=?", (event_key,),
-            ).fetchone()["state"]
-        self.assertEqual(state, "sent")
+            states = {
+                row["event_key"]: row["state"]
+                for row in db.execute(
+                    "SELECT event_key,state FROM notifications WHERE event_key IN (?,?)",
+                    (event_key, recovery_key),
+                )
+            }
+        self.assertEqual(states, {event_key: "sent", recovery_key: "sent"})
 
     def test_history_recovery_requires_unique_marker_from_this_bot(self):
         class FakeThread:

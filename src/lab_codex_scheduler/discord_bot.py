@@ -355,6 +355,30 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
     require_mention = mention_setting in {"1", "true", "yes", "on"}
     initialize(db_path)
     store = DiscordStore(db_path)
+    interrupted_inbox_events = store.fail_interrupted_events()
+
+    def queue_inbox_notice(event_id: str, payload: dict[str, object], message: str) -> None:
+        destination_id = payload.get("channel_id")
+        requester_id = payload.get("user_id")
+        if (not isinstance(destination_id, str) or not destination_id.isdigit()
+                or not isinstance(requester_id, str) or not requester_id.isdigit()):
+            return
+        store.enqueue_notification(
+            f"discord-inbox-recovery:{event_id}", destination_id,
+            {"kind": "inbox_recovery", "requester_id": requester_id, "message": message},
+        )
+
+    for interrupted in interrupted_inbox_events:
+        try:
+            saved_payload = json.loads(str(interrupted["payload_json"]))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(saved_payload, dict):
+            queue_inbox_notice(
+                str(interrupted["message_id"]), saved_payload,
+                "依頼の処理中にBotが停止したため、この依頼の結果が不明です。"
+                "重複処理を避けて自動再実行していません。状態を確認してから必要なら依頼を再送してください。",
+            )
     instructions = ConversationInstructions(instruction_dir)
     instructions.initialize(
         "# Discord研究アシスタントの会話方針\n\n"
@@ -1346,6 +1370,7 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
 
     commands_synced = False
     notification_task: asyncio.Task[None] | None = None
+    inbox_recovery_task: asyncio.Task[None] | None = None
     restored_plan_views = False
 
     async def completion_files(job_id: str, destination: discord.abc.Messageable) -> list[discord.File]:
@@ -1519,6 +1544,17 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
                             proposal_tasks.add(task)
                             task.add_done_callback(proposal_tasks.discard)
                             continue
+                        if payload.get("kind") == "inbox_recovery":
+                            message = str(payload.get("message", "依頼の処理状態を確認してください。"))
+                            await destination.send(
+                                f"<@{requester}> {message}",
+                                nonce=_notification_nonce(event_key),
+                                allowed_mentions=discord.AllowedMentions(
+                                    users=[discord.Object(id=int(requester))],
+                                ),
+                            )
+                            store.complete_notification(event_key)
+                            continue
                         state = str(payload.get("status", "unknown"))
                         job_id = str(payload.get("job_id", "unknown"))
                         if payload.get("kind") == "report":
@@ -1605,15 +1641,19 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
 
     @bot.event
     async def on_ready() -> None:
-        nonlocal commands_synced, notification_task, restored_plan_views
+        nonlocal commands_synced, notification_task, inbox_recovery_task, restored_plan_views
         if not codex.running:
             try:
                 await codex.start()
             except CodexError:
                 LOG.exception("Codex app-server is unavailable; slash commands remain usable")
         if not commands_synced:
-            await bot.tree.sync()
-            commands_synced = True
+            try:
+                await bot.tree.sync()
+            except discord.HTTPException:
+                LOG.exception("Could not sync Discord application commands; will retry on reconnect")
+            else:
+                commands_synced = True
         if not restored_plan_views:
             if environment_config is None:
                 restored_plan_views = True
@@ -1654,6 +1694,10 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
                     restored_plan_views = True
         if notification_task is None or notification_task.done():
             notification_task = asyncio.create_task(deliver_notifications(), name="discord-notifications")
+        if inbox_recovery_task is None or inbox_recovery_task.done():
+            inbox_recovery_task = asyncio.create_task(
+                recover_received_inbox_events(), name="discord-inbox-recovery",
+            )
 
     @bot.event
     async def on_message(message: discord.Message) -> None:
@@ -1675,9 +1719,22 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
             require_mention=require_mention,
         ):
             return
+        queued_payload = {
+            "kind": "message",
+            "guild_id": str(message.guild.id) if message.guild else "",
+            "channel_id": str(message.channel.id),
+            "user_id": str(message.author.id),
+            "content": message.content,
+            "attachments": [
+                {"filename": item.filename, "size": item.size, "content_type": item.content_type}
+                for item in message.attachments
+            ],
+        }
+        if not store.accept_event(str(message.id), queued_payload):
+            return
         lock = message_locks.setdefault(str(message.channel.id), asyncio.Lock())
         async with lock:
-            await handle_mention(message)
+            await handle_mention(message, preclaimed_event=True)
 
     async def handle_mention(
         message: discord.Message, *, force_new_codex_thread: bool = False,
@@ -1724,7 +1781,12 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
                                     ephemeral=True,
                                 )
                                 return
-                            await handle_mention(message, force_new_codex_thread=True)
+                            await handle_mention(
+                                message, force_new_codex_thread=True, retry_event=True,
+                            )
+
+                    if preclaimed_event:
+                        store.finish_event(str(message.id), error="conversation_recovery_required")
 
                     await message.reply(
                         "このスレッドのCodex会話対応を復旧できませんでした。別の会話への誤接続を防ぐため、"
@@ -1737,6 +1799,7 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
             thread_id = ""
             parent_id = str(message.channel.id)
         event_payload = {
+            "kind": "message",
             "guild_id": str(message.guild.id) if message.guild else "",
             "channel_id": str(message.channel.id),
             "user_id": str(message.author.id),
@@ -1758,6 +1821,7 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
             if not retry_event or not store.retry_failed_event(str(message.id), event_payload):
                 return
         try:
+            store.mark_event_processing(str(message.id))
             if message.guild is None:
                 raise ValueError("DMでのメンション会話はまだ対応していません")
             max_bytes = int(os.environ.get(
@@ -1927,6 +1991,67 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
             store.finish_event(str(message.id), error=type(exc).__name__)
             LOG.exception("Discord message processing failed (message_id=%s)", message.id)
 
+    async def recover_received_inbox_events() -> None:
+        """Replay only durable messages that had not started a Codex Turn."""
+        for row in store.events_in_state("received"):
+            message_id = str(row["message_id"])
+            try:
+                payload = json.loads(str(row["payload_json"]))
+            except json.JSONDecodeError:
+                store.fail_received_event(message_id, "invalid_saved_payload")
+                continue
+            if not isinstance(payload, dict):
+                store.fail_received_event(message_id, "invalid_saved_payload")
+                continue
+            if payload.get("kind") != "message" or not message_id.isdigit():
+                if store.fail_received_event(message_id, "interaction_cannot_be_replayed_after_restart"):
+                    queue_inbox_notice(
+                        message_id, payload,
+                        "Bot再起動前に会話開始操作が中断されました。自動再実行していないため、"
+                        "結果を確認してからもう一度依頼してください。",
+                    )
+                continue
+            channel_id = payload.get("channel_id")
+            if not isinstance(channel_id, str) or not channel_id.isdigit():
+                store.fail_received_event(message_id, "invalid_saved_channel")
+                continue
+            try:
+                channel = bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
+                message = await channel.fetch_message(int(message_id))
+                saved_user_id = payload.get("user_id")
+                saved_guild_id = payload.get("guild_id")
+                if (not isinstance(saved_user_id, str)
+                        or str(message.author.id) != saved_user_id
+                        or (isinstance(saved_guild_id, str) and saved_guild_id
+                            and str(message.guild.id if message.guild else "") != saved_guild_id)):
+                    store.fail_received_event(message_id, "recovered_message_identity_mismatch")
+                    continue
+                channel_ids = {str(message.channel.id)}
+                if isinstance(message.channel, discord.Thread) and message.channel.parent_id:
+                    channel_ids.add(str(message.channel.parent_id))
+                if not any(access.allows(
+                    str(message.author.id),
+                    str(message.guild.id) if message.guild else None,
+                    candidate,
+                ) for candidate in channel_ids):
+                    if store.fail_received_event(message_id, "access_revoked_before_recovery"):
+                        queue_inbox_notice(
+                            message_id, payload,
+                            "Bot再起動後に許可設定が変わったため、保留中の依頼を処理しませんでした。",
+                        )
+                    continue
+                lock = message_locks.setdefault(str(message.channel.id), asyncio.Lock())
+                async with lock:
+                    await handle_mention(message, preclaimed_event=True)
+            except Exception:
+                LOG.exception("Could not recover a received Discord message (%s)", message_id)
+                if store.fail_received_event(message_id, "message_unavailable_after_restart"):
+                    queue_inbox_notice(
+                        message_id, payload,
+                        "Bot再起動後に元のDiscordメッセージを取得できず処理していません。"
+                        "メッセージを確認してから必要なら再送してください。",
+                    )
+
     original_close = bot.close
 
     async def close() -> None:
@@ -1940,6 +2065,9 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
             task.cancel()
         if proposal_tasks:
             await asyncio.gather(*proposal_tasks, return_exceptions=True)
+        if inbox_recovery_task is not None:
+            inbox_recovery_task.cancel()
+            await asyncio.gather(inbox_recovery_task, return_exceptions=True)
         await codex.close()
         await original_close()
 

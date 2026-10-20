@@ -63,6 +63,48 @@ class DiscordStore:
             )
             return result.rowcount == 1
 
+    def events_in_state(self, state: str) -> list[dict[str, object]]:
+        if state not in {"received", "processing", "processed", "failed"}:
+            raise ValueError("invalid Discord inbox state")
+        with connect(self.path) as db:
+            rows = db.execute(
+                "SELECT * FROM discord_inbox WHERE state=? ORDER BY received_at,message_id", (state,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def mark_event_processing(self, message_id: str) -> None:
+        with connect(self.path) as db:
+            result = db.execute(
+                "UPDATE discord_inbox SET state='processing' WHERE message_id=? AND state='received'",
+                (message_id,),
+            )
+            if result.rowcount != 1:
+                raise ValueError("Discord event is no longer waiting to be processed")
+
+    def fail_received_event(self, message_id: str, error: str) -> bool:
+        with connect(self.path) as db:
+            result = db.execute(
+                "UPDATE discord_inbox SET state='failed',processed_at=?,error=? "
+                "WHERE message_id=? AND state='received'",
+                (utc_now(), error, message_id),
+            )
+            return result.rowcount == 1
+
+    def fail_interrupted_events(self) -> list[dict[str, object]]:
+        """Fail closed after restart rather than replaying a possibly completed Codex turn."""
+        with connect(self.path) as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(
+                "SELECT * FROM discord_inbox WHERE state='processing' ORDER BY received_at,message_id"
+            ).fetchall()
+            if rows:
+                db.executemany(
+                    "UPDATE discord_inbox SET state='failed',processed_at=?,error=? "
+                    "WHERE message_id=? AND state='processing'",
+                    [(utc_now(), "interrupted_by_restart", row["message_id"]) for row in rows],
+                )
+            return [dict(row) for row in rows]
+
     def finish_event(self, message_id: str, error: str | None = None) -> None:
         state = "failed" if error else "processed"
         with connect(self.path) as db:

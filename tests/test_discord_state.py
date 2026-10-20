@@ -48,6 +48,27 @@ class DiscordStoreTests(unittest.TestCase):
             rows = db.execute("SELECT interaction_id,command_name,user_id FROM discord_interactions").fetchall()
         self.assertEqual([tuple(row) for row in rows], [("1001", "submit", "user-1")])
 
+    def test_received_message_queue_survives_restart_without_replaying_processing_turns(self):
+        self.assertTrue(self.store.accept_event(
+            "m-queued", {"channel_id": "10", "user_id": "20", "content": "queued"},
+        ))
+        self.assertTrue(self.store.accept_event(
+            "m-running", {"channel_id": "10", "user_id": "20", "content": "running"},
+        ))
+        self.store.mark_event_processing("m-running")
+
+        queued = self.store.events_in_state("received")
+        self.assertEqual([row["message_id"] for row in queued], ["m-queued"])
+        interrupted = self.store.fail_interrupted_events()
+        self.assertEqual([row["message_id"] for row in interrupted], ["m-running"])
+        with connect(self.db) as db:
+            row = db.execute(
+                "SELECT state,error FROM discord_inbox WHERE message_id='m-running'",
+            ).fetchone()
+        self.assertEqual(tuple(row), ("failed", "interrupted_by_restart"))
+        self.assertTrue(self.store.fail_received_event("m-queued", "message_unavailable"))
+        self.assertEqual(self.store.events_in_state("received"), [])
+
     def test_failed_event_can_only_be_retried_after_explicit_confirmation(self):
         self.assertTrue(self.store.accept_event("m2", {"content": "original"}))
         self.assertFalse(self.store.retry_failed_event("m2", {"content": "retry"}))
