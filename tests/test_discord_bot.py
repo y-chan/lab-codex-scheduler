@@ -230,6 +230,16 @@ class DiscordBotConstructionTests(unittest.TestCase):
         class FakeCodex:
             running = True
 
+            def __init__(self):
+                self.resumed = []
+                self.turns = []
+
+            async def resume_thread(self, thread_id):
+                self.resumed.append(thread_id)
+
+            async def run_turn(self, thread_id, prompt, **kwargs):
+                self.turns.append((thread_id, prompt))
+
             async def close(self):
                 pass
 
@@ -248,7 +258,8 @@ class DiscordBotConstructionTests(unittest.TestCase):
             id=789, author=author, channel=channel, guild=guild,
             content="<@42> continue", attachments=[], mentions=[],
         )
-        with patch("lab_codex_scheduler.discord_bot.CodexAppServer", return_value=FakeCodex()):
+        codex = FakeCodex()
+        with patch("lab_codex_scheduler.discord_bot.CodexAppServer", return_value=codex):
             bot = build_bot(
                 root / "state.sqlite3", root / "inbox", root / "conversation",
                 DiscordPolicy(
@@ -282,6 +293,8 @@ class DiscordBotConstructionTests(unittest.TestCase):
         asyncio.run(recover())
         failed = store.events_in_state("failed")
         self.assertEqual(failed[0]["error"], "access_revoked_before_recovery")
+        self.assertEqual(codex.resumed, [])
+        self.assertEqual(codex.turns, [])
         notices = store.claim_notifications()
         self.assertEqual(len(notices), 1)
         notice = json.loads(str(notices[0]["payload_json"]))
