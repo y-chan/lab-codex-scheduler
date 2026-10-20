@@ -573,6 +573,87 @@ class DiscordBotConstructionTests(unittest.TestCase):
         self.assertEqual(parent.created_threads, 1)
         self.assertEqual(codex.turn, ("codex-456", "Run a new experiment"))
 
+    def test_new_conversation_creates_forum_post_and_codex_session(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+
+        class FakeCodex:
+            running = True
+
+            async def close(self):
+                pass
+
+            async def new_thread(self):
+                return "codex-forum"
+
+            async def run_turn(self, thread_id, prompt, **kwargs):
+                self.turn = (thread_id, prompt)
+                await kwargs["on_event"]({
+                    "method": "item/agentMessage/delta", "params": {"delta": "Forumから開始"},
+                })
+
+        codex = FakeCodex()
+        with patch("lab_codex_scheduler.discord_bot.CodexAppServer", return_value=codex):
+            bot = build_bot(
+                root / "state.sqlite3", root / "inbox", root / "conversation",
+                DiscordPolicy(user_ids=frozenset({"123"}), channel_ids=frozenset({"2"})),
+            )
+        self.addCleanup(lambda: asyncio.run(bot.close()))
+
+        class FakeProcessing:
+            async def edit(self, **kwargs):
+                pass
+
+        class FakeThread:
+            id = 456
+            parent_id = 2
+            mention = "<#456>"
+
+            def __init__(self, parent):
+                self.parent = parent
+                self.sent = []
+
+            async def send(self, content=None, **kwargs):
+                self.sent.append(content or kwargs.get("embed"))
+                return FakeProcessing()
+
+        class FakeForumChannel:
+            id = 2
+
+            def __init__(self):
+                self.thread = FakeThread(self)
+
+            async def create_thread(self, **kwargs):
+                self.create_args = kwargs
+                return SimpleNamespace(thread=self.thread)
+
+        parent = FakeForumChannel()
+        user = SimpleNamespace(id=123, display_name="researcher")
+        response = SimpleNamespace(
+            defer=lambda **kwargs: asyncio.sleep(0), is_done=lambda: True,
+        )
+        followup = SimpleNamespace(send=lambda *args, **kwargs: asyncio.sleep(0))
+        interaction = SimpleNamespace(
+            id=89, user=user, guild_id=1, channel_id=2, channel=parent,
+            guild=SimpleNamespace(id=1, filesize_limit=10_000_000),
+            response=response, followup=followup,
+        )
+        command = next(command for command in bot.tree.get_commands()
+                       if command.name == "new-conversation")
+        with patch.object(discord, "Thread", FakeThread), patch.object(
+            discord, "ForumChannel", FakeForumChannel,
+        ):
+            asyncio.run(command.callback(interaction, "forum-study", "Compare two baselines"))
+
+        session = DiscordStore(root / "state.sqlite3").get_session("456")
+        self.assertEqual(parent.create_args["name"], "forum-study")
+        self.assertIn("Compare two baselines", parent.create_args["content"])
+        self.assertEqual(session["codex_thread_id"], "codex-forum")
+        self.assertEqual(codex.turn, ("codex-forum", "Compare two baselines"))
+        processed = DiscordStore(root / "state.sqlite3").events_in_state("processed")
+        self.assertEqual(processed[0]["message_id"], "slash-89")
+
     def test_completion_artifact_selection_is_bounded_and_skips_logs_and_checkpoints(self):
         items = [
             {"name": "checkpoint.pt", "size": 10},
