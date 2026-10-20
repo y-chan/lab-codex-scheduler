@@ -859,6 +859,7 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
             logdir = root / str(uuid.UUID(job_id))
             if logdir.is_symlink() or not logdir.is_dir() or not logdir.resolve().is_relative_to(resolved_root):
                 raise ValueError("指定ジョブのTensorBoard cacheが見つかりません")
+            logdir.resolve(strict=True).chmod(0o700)
             selected_tags = [item.strip() for item in tags.split(",") if item.strip()] or None
             if selected_tags is None and environment_config is not None:
                 environment = load_environments(environment_config).get(spec.environment_id)

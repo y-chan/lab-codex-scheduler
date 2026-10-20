@@ -1,5 +1,7 @@
 import asyncio
 import importlib.util
+import os
+import stat
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -14,7 +16,8 @@ from lab_codex_scheduler.discord_bot import (
 import discord
 from lab_codex_scheduler.discord_state import DiscordPolicy, DiscordStore
 from lab_codex_scheduler.db import connect
-from lab_codex_scheduler.jobs import JobRepository, JobSpec
+from lab_codex_scheduler.config import load_environments
+from lab_codex_scheduler.jobs import JobRepository, JobSpec, config_digest
 from lab_codex_scheduler.proposals import _scalar_context
 
 
@@ -388,6 +391,93 @@ class DiscordBotConstructionTests(unittest.TestCase):
             self.assertEqual(db.execute(
                 "SELECT status,paused FROM jobs WHERE id=?", (spec.id,),
             ).fetchone()[:], ("running", 0))
+
+    def test_plot_uses_shared_default_cache_without_environment_override(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        config = root / "environments.toml"
+        config.write_text(
+            "[environments.test]\n"
+            'host = "fake-host"\n'
+            'type = "native"\n'
+            'workdir = "/workspace"\n'
+            'gpu_visibility = "none"\n'
+            'validation_tags = ["validation/loss"]\n'
+            'log_dir = "/workspace/runs"\n',
+            encoding="utf-8",
+        )
+
+        class FakeCodex:
+            running = False
+
+            async def close(self):
+                pass
+
+        with patch("lab_codex_scheduler.discord_bot.CodexAppServer", return_value=FakeCodex()):
+            bot = build_bot(
+                root / "state.sqlite3", root / "inbox", root / "conversation",
+                DiscordPolicy(
+                    user_ids=frozenset({"123"}), guild_ids=frozenset({"1"}),
+                    channel_ids=frozenset({"2"}),
+                ), config,
+            )
+        self.addCleanup(lambda: asyncio.run(bot.close()))
+        environment = load_environments(config)["test"]
+        spec = JobSpec.create(
+            environment, ["python", "train.py"],
+            "00000000-0000-0000-0000-000000000127",
+        )
+        JobRepository(str(root / "state.sqlite3")).create(
+            spec, config_digest(str(config)), requester_id="123",
+        )
+        cache_root = root / ".local/state/lab-codex-scheduler/tensorboard"
+        logdir = cache_root / spec.id
+        logdir.mkdir(parents=True)
+        png = b"\x89PNG\r\n\x1a\nplot"
+
+        class Response:
+            deferred = False
+            sent = None
+
+            async def defer(self, **kwargs):
+                self.deferred = True
+
+            async def send_message(self, content, **kwargs):
+                self.sent = content
+
+            def is_done(self):
+                return self.deferred
+
+        class Followup:
+            sent = None
+
+            async def send(self, content, **kwargs):
+                self.sent = (content, kwargs)
+
+        response, followup = Response(), Followup()
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=123), guild_id=1, channel_id=2,
+            response=response, followup=followup,
+        )
+
+        def write_plot(runs, output, tags):
+            output.write_bytes(png)
+            return output
+
+        with patch.dict(os.environ, {
+            "HOME": str(root), "XDG_STATE_HOME": "", "LAB_CDS_TENSORBOARD_CACHE_DIR": "",
+        }), patch("lab_codex_scheduler.discord_bot.read_tensorboard", return_value={
+            "validation/loss": [object()],
+        }), patch("lab_codex_scheduler.discord_bot.plot_scalars", side_effect=write_plot):
+            plot = next(command for command in bot.tree.get_commands() if command.name == "plot")
+            asyncio.run(plot.callback(interaction, spec.id, ""))
+
+        self.assertTrue(response.deferred)
+        self.assertIn("TensorBoardグラフ", followup.sent[0])
+        self.assertEqual(followup.sent[1]["file"].filename, f"{spec.id[:8]}-scalars.png")
+        self.assertEqual(stat.S_IMODE(cache_root.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(logdir.stat().st_mode), 0o700)
 
     def test_new_conversation_creates_thread_and_codex_session(self):
         temp = tempfile.TemporaryDirectory()
