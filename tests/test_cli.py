@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from lab_codex_scheduler.cli import main
-from lab_codex_scheduler.db import backup_database, connect, initialize
+from lab_codex_scheduler.db import backup_database, connect, initialize, restore_database
 from lab_codex_scheduler.jobs import JobRepository, JobSpec
 
 
@@ -45,6 +45,46 @@ class QueueControlCLITests(unittest.TestCase):
             initialize(db_path)
             with self.assertRaisesRegex(ValueError, "differ from the source"):
                 backup_database(db_path, db_path)
+
+    def test_db_restore_verifies_snapshot_and_never_overwrites(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "scheduler.sqlite3"
+            backup = root / "backup.sqlite3"
+            restored = root / "restored.sqlite3"
+            initialize(source)
+            spec = JobSpec("00000000-0000-0000-0000-000000000026", "env", "gpu",
+                           ("true",), "/work", {})
+            JobRepository(str(source)).create(spec, "hash")
+            backup_database(source, backup)
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["db-restore", str(backup), str(restored)]), 0)
+            self.assertEqual(json.loads(stdout.getvalue())["status"], "restored")
+            self.assertEqual(stat.S_IMODE(restored.stat().st_mode), 0o600)
+            with closing(sqlite3.connect(restored)) as restored_db:
+                self.assertEqual(restored_db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+                self.assertEqual(restored_db.execute("SELECT id FROM jobs").fetchone()[0], spec.id)
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(main(["db-restore", str(backup), str(restored)]), 2)
+            self.assertIn("already exists", stderr.getvalue())
+            self.assertEqual(
+                restore_database(backup, root / "another-restored.sqlite3").name,
+                "another-restored.sqlite3",
+            )
+
+    def test_db_restore_rejects_invalid_backup_and_removes_partial_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            invalid = root / "invalid.sqlite3"
+            invalid.write_bytes(b"not a SQLite database")
+            destination = root / "restored.sqlite3"
+            with self.assertRaisesRegex(RuntimeError, "SQLite restore failed"):
+                restore_database(invalid, destination)
+            self.assertFalse(destination.exists())
 
     def test_pause_and_resume_commands_change_durable_queue_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

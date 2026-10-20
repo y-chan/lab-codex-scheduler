@@ -273,3 +273,39 @@ def backup_database(source_path: str | Path, destination_path: str | Path) -> Pa
         raise
     os.chmod(destination, 0o600)
     return destination
+
+
+def restore_database(backup_path: str | Path, destination_path: str | Path) -> Path:
+    """Restore a verified snapshot to a new file without replacing existing data."""
+    backup = Path(backup_path).expanduser().resolve(strict=True)
+    requested_destination = Path(destination_path).expanduser()
+    destination = requested_destination.resolve()
+    if backup == destination:
+        raise ValueError("restore destination must differ from the backup database")
+    if requested_destination.exists() or requested_destination.is_symlink():
+        raise FileExistsError(f"restore destination already exists: {requested_destination}")
+    if not destination.parent.is_dir():
+        raise FileNotFoundError(f"restore directory does not exist: {destination.parent}")
+    descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    os.close(descriptor)
+    try:
+        with closing(sqlite3.connect(f"{backup.as_uri()}?mode=ro", uri=True, timeout=30)) as source_db, \
+                closing(sqlite3.connect(destination, timeout=30)) as restored_db:
+            result = source_db.execute("PRAGMA integrity_check").fetchone()
+            if result is None or result[0] != "ok":
+                raise RuntimeError(f"SQLite backup integrity check failed: {result}")
+            row = source_db.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
+            if row is None or row[0] != SCHEMA_VERSION:
+                raise RuntimeError("SQLite backup has an unexpected schema version")
+            source_db.backup(restored_db)
+            result = restored_db.execute("PRAGMA integrity_check").fetchone()
+            if result is None or result[0] != "ok":
+                raise RuntimeError(f"Restored SQLite integrity check failed: {result}")
+    except sqlite3.Error as exc:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError(f"SQLite restore failed: {exc}") from exc
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    os.chmod(destination, 0o600)
+    return destination

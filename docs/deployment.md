@@ -107,4 +107,14 @@ uv run --locked lab-codex-scheduler db-backup \
   ~/.local/share/lab-codex-scheduler/backups/scheduler-$(date +%Y%m%d-%H%M%S).sqlite3
 ```
 
-このコマンドは手動スナップショットです。バックアップ先の別媒体への同期、定期実行、保持期間、復元手順は運用環境の保存要件を確認して設定してください。source DBをサービス停止なしで読むため、OS上でファイルを直接copyする方法は使いません。
+`db-restore`はバックアップを読み取り専用で開き、integrity checkとschema versionを検証してから、新規ファイルとして復元します。既存ファイルを上書きしません。
+
+```sh
+uv run --locked lab-codex-scheduler db-restore \
+  ~/.local/share/lab-codex-scheduler/backups/scheduler-20261021-120000.sqlite3 \
+  ~/.local/share/lab-codex-scheduler/scheduler-restored.sqlite3
+```
+
+復元先を運用DBに切り替える場合は、両systemd serviceを停止し、復元先の内容を確認してから実施してください。現行DBとその`-wal`/`-shm`ファイルを同じディレクトリへ退避し、退避後に復元済みDBを`~/.local/share/lab-codex-scheduler/scheduler.sqlite3`へ移動します。復旧後はDiscordとSchedulerを起動し、ジョブ状態を確認してください。切替手順は運用DBを置き換えるため、保守時間内に運用者が実施します。
+
+作成・復元コマンドは実装済みですが、手動スナップショットの定期実行、別媒体への複製、保持期間、実環境での復元訓練は未設定です。保存要件と復旧目標を決めてから構成してください。source DBをサービス停止なしで読むため、OS上でファイルを直接copyする方法は使いません。

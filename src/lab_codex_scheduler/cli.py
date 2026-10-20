@@ -13,7 +13,7 @@ from pathlib import Path
 
 from lab_codex_scheduler import __version__
 from lab_codex_scheduler.config import ConfigError, load_environments
-from lab_codex_scheduler.db import backup_database, connect, initialize
+from lab_codex_scheduler.db import backup_database, connect, initialize, restore_database
 from lab_codex_scheduler.gpu import GPURequest, GPUReservationStore, NVIDIAProbe, persist_snapshots
 from lab_codex_scheduler.jobs import JobRepository, JobSpec, RemoteSupervisor, config_digest
 from lab_codex_scheduler.jobs import OpenSSHTransport
@@ -114,6 +114,9 @@ def parser() -> argparse.ArgumentParser:
     backup = commands.add_parser("db-backup", help="SQLite状態DBの検証済みバックアップを作成")
     backup.add_argument("destination", type=Path, help="既存ファイルと重ならないバックアップ先")
     backup.add_argument("--db", type=Path, default=default_db_path())
+    restore = commands.add_parser("db-restore", help="バックアップを新しいSQLiteファイルへ復元")
+    restore.add_argument("backup", type=Path, help="db-backupで作成したSQLite snapshot")
+    restore.add_argument("destination", type=Path, help="既存ファイルと重ならない復元先")
     discord = commands.add_parser("discord", help="Discord Botを起動")
     discord.add_argument("--db", type=Path, default=default_db_path())
     discord.add_argument("--data-dir", type=Path, default=default_data_dir())
@@ -157,6 +160,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "db-backup":
             destination = backup_database(args.db, args.destination)
             print(json.dumps({"status": "verified", "backup": str(destination)}, ensure_ascii=False))
+        elif args.command == "db-restore":
+            destination = restore_database(args.backup, args.destination)
+            print(json.dumps({"status": "restored", "database": str(destination)}, ensure_ascii=False))
         elif args.command == "submit":
             if not args.confirm_resource_check:
                 raise ConfigError(

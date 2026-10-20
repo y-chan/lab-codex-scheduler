@@ -6,7 +6,7 @@
 
 状態：オフライン実装とローカル検証を完了。実GPUサーバーへの疎通、配備先での再起動・終了状態照合は未実施。
 
-実装：OpenSSH Host解決、TOML環境定義、拡張登録可能なExecutionAdapter ProtocolとDocker/uv/venv/native adapter、SQLiteスキーマ、`db-backup`によるOnline Backup API経由の整合snapshot、integrity check、0600作成、既存ファイル非上書き、ジョブID単位のDetached Supervisor、stdout/stderr、終了コード、状態不明、再照会。GPU割当後に実行環境のGit SHAと追跡ファイルのdirty状態をbest-effort取得し、job/attemptに保存。Git情報を取得できなくても起動は継続します。独自adapterの登録・設定読込・実行argvをGPUなしテストで検証。
+実装：OpenSSH Host解決、TOML環境定義、拡張登録可能なExecutionAdapter ProtocolとDocker/uv/venv/native adapter、SQLiteスキーマ、`db-backup`によるOnline Backup API経由の整合snapshotと`db-restore`による新規ファイルへの復元、integrity/schema検証、0600作成、既存ファイル非上書き、ジョブID単位のDetached Supervisor、stdout/stderr、終了コード、状態不明、再照会。GPU割当後に実行環境のGit SHAと追跡ファイルのdirty状態をbest-effort取得し、job/attemptに保存。Git情報を取得できなくても起動は継続します。独自adapterの登録・設定読込・実行argvをGPUなしテストで検証。
 
 受け入れ：不正設定は接続前に拒否。Host表示はSSH設定を変更しない。同一UUIDで二重起動しない。通信断を即時失敗とせずUNKNOWNに保つ。ジョブIDに限定した停止。偽transportで起動・照会・停止・ログ解析を検証。
 
@@ -56,6 +56,6 @@
 2. Discord Botのtoken、Message Content Intent、User/Guild/Channel allowlistを設定し、検証用GuildでCommandを同期。
 3. 制御サーバーのCodex CLIを認証し、read-only状態でapp-serverを接続確認。
 4. GPU取得とDiscord停止操作は、専用の検証ジョブと小さい空き閾値で運用者が確認。
-5. 手動のDB snapshot機能はある。定期実行、別媒体への複製、保持期間、復元訓練、障害通知を運用要件に合わせて確定してから常時稼働へ移す。
+5. `db-backup`と非上書き`db-restore`は実装済み。定期実行、別媒体への複製、保持期間、実環境での復元訓練、障害通知を運用要件に合わせて確定してから常時稼働へ移す。
 
 Slurm、Kubernetes、Redis、PostgreSQL、GitHub Issues連携は、SQLite単一制御ノードの制約が確認されるまで導入しません。
