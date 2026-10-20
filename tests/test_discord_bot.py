@@ -9,7 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from lab_codex_scheduler.discord_bot import (
-    ConfirmNewConversationView, _completion_artifact_candidates, _notification_nonce,
+    ApprovalView, CancelJobView, ConfirmNewConversationView, PlanApprovalView,
+    _completion_artifact_candidates, _notification_nonce,
     _extract_json_object, _recover_session_marker,
     _replace_session_markers, _session_marker, _should_handle_message, build_bot,
 )
@@ -749,6 +750,30 @@ class DiscordBotConstructionTests(unittest.TestCase):
         self.assertTrue(foreign.response.ephemeral)
         owner = SimpleNamespace(user=SimpleNamespace(id=123), response=FakeResponse())
         self.assertTrue(asyncio.run(view.interaction_check(owner)))
+
+    def test_codex_plan_and_cancel_approval_views_are_requester_only(self):
+        class FakeResponse:
+            def __init__(self):
+                self.message = None
+
+            async def send_message(self, content, ephemeral):
+                self.message = (content, ephemeral)
+
+        async def check_all():
+            views = [
+                ApprovalView(123),
+                PlanApprovalView("plan-1", 123, lambda approve: asyncio.sleep(0)),
+                CancelJobView(123, lambda: asyncio.sleep(0)),
+            ]
+            for view in views:
+                foreign_response = FakeResponse()
+                foreign = SimpleNamespace(user=SimpleNamespace(id=456), response=foreign_response)
+                self.assertFalse(await view.interaction_check(foreign))
+                self.assertEqual(foreign_response.message, ("依頼者のみ操作できます。", True))
+                owner = SimpleNamespace(user=SimpleNamespace(id=123), response=FakeResponse())
+                self.assertTrue(await view.interaction_check(owner))
+
+        asyncio.run(check_all())
 
     def test_mention_free_mode_only_answers_threads_with_a_persisted_session(self):
         self.assertTrue(_should_handle_message(
