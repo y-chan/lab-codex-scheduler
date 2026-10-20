@@ -4,6 +4,7 @@
 
 アーキテクチャと受け入れ状況は [`docs/architecture.md`](docs/architecture.md) と [`docs/implementation-plan.md`](docs/implementation-plan.md) を参照してください。
 systemd user serviceの雛形は [`docs/deployment.md`](docs/deployment.md) にあります。
+制御サーバー、SSH、Discord、Codexの初回設定手順は [`docs/first-run.md`](docs/first-run.md) を参照してください。
 
 ## 開発状態
 

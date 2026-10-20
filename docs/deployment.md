@@ -2,6 +2,8 @@
 
 この雛形はLinuxのsystemd user service向けです。パス、Unix user、環境ファイルは配備先で編集してください。ユニットの起動・有効化はこのリポジトリでは行いません。
 
+制御サーバー、SSH alias、Discord ID、Codex CLIを用意する順序は[`first-run.md`](first-run.md)にあります。
+
 ## 起動前の設定
 
 リポジトリの配置先で依存を準備します。実行環境設定はサンプルをコピーして、ユーザーが登録したOpenSSH aliasと実際の作業ディレクトリに合わせます。`config-check`は構文・値を検証し、`host-test`は指定Hostへ実際にSSH接続します。
@@ -76,6 +78,7 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
 Environment=XDG_CONFIG_HOME=%h/.config
 Environment=XDG_DATA_HOME=%h/.local/share
 EnvironmentFile=%h/.config/lab-codex-scheduler/secrets.env
+EnvironmentFile=%h/.config/lab-codex-scheduler/discord-policy.env
 UMask=0077
 ExecStart=%h/.local/bin/uv run --locked --no-sync lab-codex-scheduler discord --config %h/.config/lab-codex-scheduler/environments.toml
 Restart=on-failure
@@ -85,7 +88,7 @@ RestartSec=10
 WantedBy=default.target
 ```
 
-`secrets.env`はownerだけが読める権限（`0600`）にし、`DISCORD_BOT_TOKEN`を設定します。許可IDなどはユニットに直接書かず、systemd drop-inまたはアクセス制限された別設定から渡します。両サービスは同じSQLite DBを使います。
+`secrets.env`はownerだけが読める権限（`0600`）にし、`DISCORD_BOT_TOKEN`だけを設定します。User/Guild/Channel allowlistは`discord-policy.env`に保存し、Bot unitだけから読み込みます。両サービスは同じSQLite DBを使います。
 
 TensorBoard同期・scalar監視・グラフ・media取得には`analysis` extraが必要です。配備時に一度、リポジトリで`uv sync --locked --extra analysis`を実行して依存を準備します。サービス起動時は`--no-sync`を使ってネットワーク上の依存同期を避けます。アプリ更新時は新しいlockfileとextraで明示的に再同期してからサービスを再起動してください。
 
