@@ -8,6 +8,32 @@ from contextlib import closing
 from pathlib import Path
 
 SCHEMA_VERSION = 13
+_REQUIRED_TABLES = frozenset({
+    "discord_inbox", "discord_interactions", "discord_sessions", "discord_threads",
+    "evaluation_followups", "experiment_plans", "gpu_reservations", "gpu_snapshots",
+    "job_attempts", "job_dependencies", "job_events", "jobs", "notifications",
+    "processed_events", "schema_meta",
+})
+
+
+def _validate_scheduler_database(db: sqlite3.Connection, description: str) -> None:
+    result = db.execute("PRAGMA integrity_check").fetchone()
+    if result is None or result[0] != "ok":
+        raise RuntimeError(f"{description} integrity check failed: {result}")
+    versions = db.execute("SELECT version FROM schema_meta").fetchall()
+    if len(versions) != 1 or versions[0][0] != SCHEMA_VERSION:
+        raise RuntimeError(f"{description} has an unexpected schema version")
+    tables = {
+        row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
+    }
+    missing = _REQUIRED_TABLES - tables
+    if missing:
+        raise RuntimeError(f"{description} is missing required tables: {', '.join(sorted(missing))}")
+    violation = db.execute("PRAGMA foreign_key_check").fetchone()
+    if violation is not None:
+        raise RuntimeError(f"{description} has a foreign key violation: {tuple(violation)}")
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -259,12 +285,7 @@ def backup_database(source_path: str | Path, destination_path: str | Path) -> Pa
         with closing(sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True, timeout=30)) as source_db, \
                 closing(sqlite3.connect(destination, timeout=30)) as backup_db:
             source_db.backup(backup_db)
-            result = backup_db.execute("PRAGMA integrity_check").fetchone()
-            if result is None or result[0] != "ok":
-                raise RuntimeError(f"SQLite backup integrity check failed: {result}")
-            row = backup_db.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
-            if row is None or row[0] != SCHEMA_VERSION:
-                raise RuntimeError("SQLite backup has an unexpected schema version")
+            _validate_scheduler_database(backup_db, "SQLite backup")
     except sqlite3.Error as exc:
         destination.unlink(missing_ok=True)
         raise RuntimeError(f"SQLite backup failed: {exc}") from exc
@@ -291,16 +312,9 @@ def restore_database(backup_path: str | Path, destination_path: str | Path) -> P
     try:
         with closing(sqlite3.connect(f"{backup.as_uri()}?mode=ro", uri=True, timeout=30)) as source_db, \
                 closing(sqlite3.connect(destination, timeout=30)) as restored_db:
-            result = source_db.execute("PRAGMA integrity_check").fetchone()
-            if result is None or result[0] != "ok":
-                raise RuntimeError(f"SQLite backup integrity check failed: {result}")
-            row = source_db.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
-            if row is None or row[0] != SCHEMA_VERSION:
-                raise RuntimeError("SQLite backup has an unexpected schema version")
+            _validate_scheduler_database(source_db, "SQLite backup")
             source_db.backup(restored_db)
-            result = restored_db.execute("PRAGMA integrity_check").fetchone()
-            if result is None or result[0] != "ok":
-                raise RuntimeError(f"Restored SQLite integrity check failed: {result}")
+            _validate_scheduler_database(restored_db, "Restored SQLite database")
     except sqlite3.Error as exc:
         destination.unlink(missing_ok=True)
         raise RuntimeError(f"SQLite restore failed: {exc}") from exc

@@ -86,6 +86,19 @@ class QueueControlCLITests(unittest.TestCase):
                 restore_database(invalid, destination)
             self.assertFalse(destination.exists())
 
+    def test_db_restore_rejects_incomplete_schema_even_with_matching_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            incomplete = root / "incomplete.sqlite3"
+            with closing(sqlite3.connect(incomplete)) as database:
+                database.execute("CREATE TABLE schema_meta(version INTEGER NOT NULL)")
+                database.execute("INSERT INTO schema_meta(version) VALUES (13)")
+                database.commit()
+            destination = root / "restored.sqlite3"
+            with self.assertRaisesRegex(RuntimeError, "missing required tables"):
+                restore_database(incomplete, destination)
+            self.assertFalse(destination.exists())
+
     def test_pause_and_resume_commands_change_durable_queue_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             db_path = Path(temp) / "scheduler.sqlite3"

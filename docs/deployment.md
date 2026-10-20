@@ -107,7 +107,7 @@ uv run --locked lab-codex-scheduler db-backup \
   ~/.local/share/lab-codex-scheduler/backups/scheduler-$(date +%Y%m%d-%H%M%S).sqlite3
 ```
 
-`db-restore`はバックアップを読み取り専用で開き、integrity checkとschema versionを検証してから、新規ファイルとして復元します。既存ファイルを上書きしません。
+`db-restore`はバックアップを読み取り専用で開き、integrity check、schema version、必須テーブル、外部キー整合性を検証してから、新規ファイルとして復元します。既存ファイルを上書きしません。
 
 ```sh
 uv run --locked lab-codex-scheduler db-restore \

@@ -60,7 +60,7 @@ SSHセッション内で学習プロセスを直接実行しません。リモ�
 
 SQLiteは初期の単一制御ノードで十分です。DBの書込みロック競合が継続する、または複数制御ノードが必要になった段階でPostgreSQLを再評価します。
 
-状態DBは`db-backup`でSQLite Online Backup APIから整合したsnapshotを作成し、`db-restore`で検証済みsnapshotを別の新規ファイルへ復元します。両コマンドは出力を上書きしません。運用DBへの切替はservice停止と現行DB退避を伴うため、CLIでは自動化せず運用者が手順に沿って行います。
+状態DBは`db-backup`でSQLite Online Backup APIから整合したsnapshotを作成し、`db-restore`でintegrity/schema version/必須テーブル/外部キーを検証したsnapshotを別の新規ファイルへ復元します。両コマンドは出力を上書きしません。運用DBへの切替はservice停止と現行DB退避を伴うため、CLIでは自動化せず運用者が手順に沿って行います。
 
 ## GPU選択と共有GPU
 
