@@ -620,11 +620,15 @@ class DiscordBotConstructionTests(unittest.TestCase):
 
         class FakeForumChannel:
             id = 2
+            flags = SimpleNamespace(require_tag=True)
+            available_tags = [SimpleNamespace(id=998, name="audio research")]
 
             def __init__(self):
                 self.thread = FakeThread(self)
+                self.created_threads = 0
 
             async def create_thread(self, **kwargs):
+                self.created_threads += 1
                 self.create_args = kwargs
                 return SimpleNamespace(thread=self.thread)
 
@@ -633,7 +637,13 @@ class DiscordBotConstructionTests(unittest.TestCase):
         response = SimpleNamespace(
             defer=lambda **kwargs: asyncio.sleep(0), is_done=lambda: True,
         )
-        followup = SimpleNamespace(send=lambda *args, **kwargs: asyncio.sleep(0))
+        class Followup:
+            messages = []
+
+            async def send(self, *args, **kwargs):
+                self.messages.append(args[0] if args else "")
+
+        followup = Followup()
         interaction = SimpleNamespace(
             id=89, user=user, guild_id=1, channel_id=2, channel=parent,
             guild=SimpleNamespace(id=1, filesize_limit=10_000_000),
@@ -644,15 +654,28 @@ class DiscordBotConstructionTests(unittest.TestCase):
         with patch.object(discord, "Thread", FakeThread), patch.object(
             discord, "ForumChannel", FakeForumChannel,
         ):
-            asyncio.run(command.callback(interaction, "forum-study", "Compare two baselines"))
+            asyncio.run(command.callback(
+                interaction, "forum-study", "Compare two baselines", "998",
+            ))
+            missing_tag_interaction = SimpleNamespace(
+                id=90, user=user, guild_id=1, channel_id=2, channel=parent,
+                guild=interaction.guild, response=response, followup=followup,
+            )
+            with patch("lab_codex_scheduler.discord_bot.LOG.exception"):
+                asyncio.run(command.callback(
+                    missing_tag_interaction, "missing-tag", "A request without a tag",
+                ))
 
         session = DiscordStore(root / "state.sqlite3").get_session("456")
         self.assertEqual(parent.create_args["name"], "forum-study")
         self.assertIn("Compare two baselines", parent.create_args["content"])
+        self.assertEqual(parent.create_args["applied_tags"], [parent.available_tags[0]])
+        self.assertEqual(parent.created_threads, 1)
         self.assertEqual(session["codex_thread_id"], "codex-forum")
         self.assertEqual(codex.turn, ("codex-forum", "Compare two baselines"))
         processed = DiscordStore(root / "state.sqlite3").events_in_state("processed")
         self.assertEqual(processed[0]["message_id"], "slash-89")
+        self.assertTrue(any("Forumはタグ必須" in message for message in followup.messages))
 
     def test_completion_artifact_selection_is_bounded_and_skips_logs_and_checkpoints(self):
         items = [

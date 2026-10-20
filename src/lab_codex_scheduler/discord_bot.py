@@ -685,15 +685,21 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
     @app_commands.describe(
         title="新しいDiscordスレッドのタイトル（100文字以内）",
         prompt="新しいCodex会話へ最初に送る依頼（1800文字以内）",
+        forum_tag_id="Forumで既存タグを指定する場合はTag ID。必須Forumでは指定が必要です",
     )
-    async def new_conversation(interaction: discord.Interaction, title: str, prompt: str) -> None:
+    async def new_conversation(
+        interaction: discord.Interaction, title: str, prompt: str, forum_tag_id: str = "",
+    ) -> None:
         if not await authorize(interaction):
             return
         title = title.strip()
         prompt = prompt.strip()
-        if not title or len(title) > 100 or not prompt or len(prompt) > 1800:
+        forum_tag_id = forum_tag_id.strip()
+        if (not title or len(title) > 100 or not prompt or len(prompt) > 1800
+                or len(forum_tag_id) > 40):
             await interaction.response.send_message(
-                "titleは1〜100文字、promptは1〜1800文字で指定してください。", ephemeral=True,
+                "titleは1〜100文字、promptは1〜1800文字、forum_tag_idは40文字以内で指定してください。",
+                ephemeral=True,
             )
             return
         if interaction.guild is None:
@@ -724,14 +730,34 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
                     if parent is None and parent_id:
                         parent = await bot.fetch_channel(int(parent_id))
                 if isinstance(parent, discord.ForumChannel):
+                    available_tags = list(parent.available_tags)
+                    selected_tag = None
+                    if forum_tag_id:
+                        matches = [tag for tag in available_tags
+                                   if str(tag.id) == forum_tag_id or tag.name == forum_tag_id]
+                        if len(matches) != 1:
+                            choices = ", ".join(f"{tag.name} ({tag.id})" for tag in available_tags)
+                            raise ValueError(
+                                f"forum_tag_idがこのForumのタグと一致しません。選択可能: {choices or 'なし'}"
+                            )
+                        selected_tag = matches[0]
+                    if parent.flags.require_tag and selected_tag is None:
+                        choices = ", ".join(f"{tag.name} ({tag.id})" for tag in available_tags)
+                        raise ValueError(
+                            "このForumはタグ必須です。forum_tag_idへ次のTag IDまたは名前を指定してください: "
+                            f"{choices or '選択可能なTagなし'}"
+                        )
                     created = await parent.create_thread(
                         name=title,
                         auto_archive_duration=1440,
                         content=f"{interaction.user.display_name}からの新しい会話です。\n\n{prompt}",
                         allowed_mentions=discord.AllowedMentions.none(),
+                        **({"applied_tags": [selected_tag]} if selected_tag is not None else {}),
                     )
                     thread = created.thread
                 elif isinstance(parent, discord.TextChannel):
+                    if forum_tag_id:
+                        raise ValueError("forum_tag_idはForum Channelから実行する場合だけ指定できます")
                     thread = await parent.create_thread(
                         name=title, auto_archive_duration=1440,
                         type=discord.ChannelType.public_thread,
