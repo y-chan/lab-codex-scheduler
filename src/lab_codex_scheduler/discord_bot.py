@@ -32,6 +32,7 @@ from lab_codex_scheduler.discord_state import (
     store_attachment,
 )
 from lab_codex_scheduler.plans import ExperimentPlan, PlanRepository, output_schema
+from lab_codex_scheduler.paths import tensorboard_cache_dir
 from lab_codex_scheduler.proposals import ProposalNotEligible, create_next_experiment_proposal
 from lab_codex_scheduler.jobs import JobRepository, JobSpec, RemoteSupervisor, normalize_not_before
 from lab_codex_scheduler.artifacts import RemoteArtifactFetcher
@@ -847,16 +848,9 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
     async def plot(interaction: discord.Interaction, job_id: str, tags: str = "") -> None:
         if not await authorize(interaction):
             return
-        cache_value = os.environ.get("LAB_CDS_TENSORBOARD_CACHE_DIR")
-        if not cache_value:
-            await interaction.response.send_message(
-                "LAB_CDS_TENSORBOARD_CACHE_DIRを設定してください。リモートイベントの自動回収は未設定です。",
-                ephemeral=True,
-            )
-            return
         try:
             spec, _, _ = JobRepository(str(db_path)).get(job_id)
-            root = Path(cache_value).expanduser()
+            root = tensorboard_cache_dir()
             if root.is_symlink() or not root.is_absolute():
                 raise ValueError("TensorBoard cache rootはsymlinkでない絶対パスにしてください")
             root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -909,10 +903,7 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
             if environment is None or not environment.log_dir:
                 raise ValueError("実行環境にTensorBoard log_dirが設定されていません")
             _verify_job_environment(db_path, spec, environment, environment_config)
-            cache_root = Path(os.environ.get(
-                "LAB_CDS_TENSORBOARD_CACHE_DIR",
-                str(Path.home() / ".local/state/lab-codex-scheduler/tensorboard"),
-            )).expanduser()
+            cache_root = tensorboard_cache_dir()
             collector = RemoteTensorBoardCollector(OpenSSHTransport(), cache_root)
             await interaction.response.defer(ephemeral=True, thinking=True)
             logdir = await asyncio.to_thread(
@@ -1440,10 +1431,7 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
             return
 
         try:
-            cache_root = Path(os.environ.get(
-                "LAB_CDS_TENSORBOARD_CACHE_DIR",
-                str(Path.home() / ".local/state/lab-codex-scheduler/tensorboard"),
-            )).expanduser()
+            cache_root = tensorboard_cache_dir()
             instructions_text, _ = instructions.read()
             proposal = await create_next_experiment_proposal(
                 db_path=db_path, environment_config=environment_config,

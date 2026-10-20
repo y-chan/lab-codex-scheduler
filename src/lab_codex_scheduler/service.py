@@ -16,6 +16,7 @@ from lab_codex_scheduler.analysis import read_tensorboard, summarize
 from lab_codex_scheduler.db import connect
 from lab_codex_scheduler.discord_state import DiscordStore
 from lab_codex_scheduler.jobs import OpenSSHTransport
+from lab_codex_scheduler.paths import tensorboard_cache_dir
 from lab_codex_scheduler.scheduler import QueueDispatcher
 from lab_codex_scheduler.tensorboard_sync import RemoteTensorBoardCollector
 
@@ -35,10 +36,7 @@ class SchedulerService:
         self.config_path = str(config_path)
         self.interval_seconds = interval_seconds
         self.dispatcher = dispatcher or QueueDispatcher(db_path, config_path)
-        cache_root = Path(os.environ.get(
-            "LAB_CDS_TENSORBOARD_CACHE_DIR",
-            str(Path.home() / ".local/state/lab-codex-scheduler/tensorboard"),
-        )).expanduser()
+        cache_root = tensorboard_cache_dir()
         self.tensorboard = tensorboard_collector or RemoteTensorBoardCollector(
             OpenSSHTransport(), cache_root
         )

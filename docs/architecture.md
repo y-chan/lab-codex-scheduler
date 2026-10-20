@@ -86,7 +86,7 @@ DB対応がないスレッドは別のCodex会話へ自動接続しません。B
 
 フォーラム投稿作成と通常Channelのスレッド作成はDiscord APIの異なる形式に従います。添付上限は受信ではGuildの`filesize_limit`、Interaction送信では`attachment_size_limit`を優先し、上限を超えるファイルは変換せず拒否します。成功通知ではallowlist内の画像・音声・CSV・JSON・Markdownから最大3件を合計16 MiB（さらにGuild上限で制限）以内で添付します。Checkpointとログ全体は自動添付しません。受信ファイルはサイズ、拡張子、MIME、ファイル名を検査して専用inboxへ保存し、Codexへは安全な作業領域のファイル参照だけを渡します。
 
-現行の成果物取得は、登録環境で設定した絶対artifact_dirの下に `<job UUID>/` を作る配置を対象とします。remote helperはUUIDとbasenameを受け取り、symlink、許可外suffix、最大サイズ超過を拒否します。`audio_manifest.json` v1は発話IDごとにGround Truth/Baseline/Generatedのbasenameを指定し、Discord `/audio-utterances`と`/compare-audio`で検索・取得できます。TensorBoard image/audioイベントはEventAccumulatorから対応形式の原bytesをサイズ制限付きで抽出し、ローカルcacheからDiscord `/tb-media`でtag候補表示・添付取得できます。変換は行いません。
+現行の成果物取得は、登録環境で設定した絶対artifact_dirの下に `<job UUID>/` を作る配置を対象とします。remote helperはUUIDとbasenameを受け取り、symlink、許可外suffix、最大サイズ超過を拒否します。`audio_manifest.json` v1は発話IDごとにGround Truth/Baseline/Generatedのbasenameを指定し、Discord `/audio-utterances`と`/compare-audio`で検索・取得できます。TensorBoard image/audioイベントはEventAccumulatorから対応形式の原bytesをサイズ制限付きで抽出し、共通cache（既定`${XDG_STATE_HOME:-~/.local/state}/lab-codex-scheduler/tensorboard`）からDiscord `/tb-media`でtag候補表示・添付取得できます。Scalarグラフ用`/plot`も同じcacheを使います。変換は行いません。
 
 ## 会話用AGENTS.md
 

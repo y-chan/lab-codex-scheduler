@@ -89,6 +89,8 @@ WantedBy=default.target
 
 TensorBoard同期・scalar監視・グラフ・media取得には`analysis` extraが必要です。配備時に一度、リポジトリで`uv sync --locked --extra analysis`を実行して依存を準備します。サービス起動時は`--no-sync`を使ってネットワーク上の依存同期を避けます。アプリ更新時は新しいlockfileとextraで明示的に再同期してからサービスを再起動してください。
 
+TensorBoard cacheは既定で`${XDG_STATE_HOME:-~/.local/state}/lab-codex-scheduler/tensorboard`を使います。保存先を変える場合は、SchedulerとDiscordの両serviceへ同じ絶対パスの`LAB_CDS_TENSORBOARD_CACHE_DIR`を設定してください。
+
 ```sh
 systemctl --user daemon-reload
 systemctl --user enable --now lab-codex-scheduler.service lab-codex-discord.service
