@@ -1,0 +1,38 @@
+# Copy to ~/.config/lab-codex-scheduler/environments.toml and edit manually.
+# Host values must be aliases configured in OpenSSH; no host is added by the bot.
+
+[environments.a100-docker]
+host = "gpu-a100"
+type = "docker"
+container = "research-container"
+workdir = "/workspace/project"
+python = ["python"]
+gpu_visibility = "cuda_visible_devices"
+validation_tags = ["validation/loss"]
+log_dir = "/workspace/project/runs"
+artifact_dir = "/workspace/project/artifacts"
+# Optional: create one GPU-queued evaluation after each successful experiment.
+# Supported placeholders: {job_id}, {artifact_dir}, {log_dir}. argv only; no shell.
+# evaluation_command = ["python", "evaluate.py", "--run-dir", "{artifact_dir}", "--job-id", "{job_id}"]
+# Optional: after that evaluation succeeds, ask Codex for one next-experiment proposal.
+# The proposal is only queued after the original requester approves its Discord button.
+# propose_next_after_evaluation = true
+
+[environments.a100-docker.env]
+
+# Set explicit host UUID to container-visible CUDA identifier mappings when required.
+[environments.a100-docker.gpu_id_map]
+# "GPU-host-uuid" = "0"
+
+[environments.pro6000-uv]
+host = "gpu-pro6000"
+type = "uv"
+workdir = "/home/researcher/project"
+command_prefix = ["uv", "run", "--"]
+python = ["python"]
+gpu_visibility = "cuda_visible_devices"
+validation_tags = ["validation/loss"]
+log_dir = "/home/researcher/project/runs"
+artifact_dir = "/home/researcher/project/artifacts"
+
+[environments.pro6000-uv.env]

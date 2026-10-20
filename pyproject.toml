@@ -1,0 +1,29 @@
+[project]
+name = "lab-codex-scheduler"
+version = "0.1.0"
+description = "Deterministic controller for research ML experiments"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "discord.py>=2.4,<3",
+]
+
+[project.optional-dependencies]
+analysis = [
+    "matplotlib>=3.8",
+    "tensorboard>=2.14",
+]
+
+[project.scripts]
+lab-codex-scheduler = "lab_codex_scheduler.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lab_codex_scheduler"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
