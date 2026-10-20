@@ -316,8 +316,10 @@ class DiscordBotConstructionTests(unittest.TestCase):
 
             def __init__(self):
                 self.thread = FakeThread(self)
+                self.created_threads = 0
 
             async def create_thread(self, **kwargs):
+                self.created_threads += 1
                 self.create_args = kwargs
                 return self.thread
 
@@ -339,6 +341,7 @@ class DiscordBotConstructionTests(unittest.TestCase):
             discord, "TextChannel", FakeTextChannel,
         ):
             asyncio.run(command.callback(interaction, "follow-up", "Run a new experiment"))
+            asyncio.run(command.callback(interaction, "follow-up", "Run a new experiment"))
 
         session = connect(root / "state.sqlite3")
         try:
@@ -353,6 +356,7 @@ class DiscordBotConstructionTests(unittest.TestCase):
             session.close()
         self.assertEqual(tuple(row), ("456", "123", "codex-456"))
         self.assertEqual(inbox["state"], "processed")
+        self.assertEqual(parent.created_threads, 1)
         self.assertEqual(codex.turn, ("codex-456", "Run a new experiment"))
 
     def test_completion_artifact_selection_is_bounded_and_skips_logs_and_checkpoints(self):

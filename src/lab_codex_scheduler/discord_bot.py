@@ -659,51 +659,72 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
             await interaction.response.send_message("Guild内でのみ利用できます。", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            if not codex.running:
-                await codex.start()
-            parent = interaction.channel
-            if isinstance(parent, discord.Thread):
-                parent_id = str(parent.parent_id or "")
-                parent = parent.parent
-                if parent is None and parent_id:
-                    parent = await bot.fetch_channel(int(parent_id))
-            if isinstance(parent, discord.ForumChannel):
-                created = await parent.create_thread(
-                    name=title,
-                    auto_archive_duration=1440,
-                    content=f"{interaction.user.display_name}からの新しい会話です。\n\n{prompt}",
-                    allowed_mentions=discord.AllowedMentions.none(),
+        event_id = f"slash-{interaction.id}"
+        event_lock = message_locks.setdefault(f"interaction:{interaction.id}", asyncio.Lock())
+        async with event_lock:
+            initial_payload = {
+                "kind": "new_conversation", "guild_id": str(interaction.guild.id),
+                "channel_id": str(interaction.channel_id), "user_id": str(interaction.user.id),
+                "content": prompt, "attachments": [],
+            }
+            if not store.accept_event(event_id, initial_payload):
+                await interaction.followup.send(
+                    "このコマンドは既に受け付け済みです。新しい会話を作る場合はもう一度実行してください。",
+                    ephemeral=True,
                 )
-                thread = created.thread
-            elif isinstance(parent, discord.TextChannel):
-                thread = await parent.create_thread(
-                    name=title, auto_archive_duration=1440,
-                    type=discord.ChannelType.public_thread,
+                return
+            try:
+                if not codex.running:
+                    await codex.start()
+                parent = interaction.channel
+                if isinstance(parent, discord.Thread):
+                    parent_id = str(parent.parent_id or "")
+                    parent = parent.parent
+                    if parent is None and parent_id:
+                        parent = await bot.fetch_channel(int(parent_id))
+                if isinstance(parent, discord.ForumChannel):
+                    created = await parent.create_thread(
+                        name=title,
+                        auto_archive_duration=1440,
+                        content=f"{interaction.user.display_name}からの新しい会話です。\n\n{prompt}",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    thread = created.thread
+                elif isinstance(parent, discord.TextChannel):
+                    thread = await parent.create_thread(
+                        name=title, auto_archive_duration=1440,
+                        type=discord.ChannelType.public_thread,
+                    )
+                    await thread.send(
+                        f"{interaction.user.display_name}からの新しい会話です。\n\n{prompt}",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                else:
+                    raise ValueError("TextまたはForum Channelで利用してください")
+                await interaction.followup.send(
+                    f"新しい会話スレッドを作成しました: {thread.mention}", ephemeral=True,
                 )
-                await thread.send(
-                    f"{interaction.user.display_name}からの新しい会話です。\n\n{prompt}",
-                    allowed_mentions=discord.AllowedMentions.none(),
+                synthetic_message = SimpleNamespace(
+                    id=event_id, author=interaction.user, channel=thread,
+                    guild=interaction.guild, content=prompt, attachments=[],
                 )
-            else:
-                raise ValueError("TextまたはForum Channelで利用してください")
-            await interaction.followup.send(
-                f"新しい会話スレッドを作成しました: {thread.mention}", ephemeral=True,
-            )
-            synthetic_message = SimpleNamespace(
-                id=f"slash-{interaction.id}", author=interaction.user, channel=thread,
-                guild=interaction.guild, content=prompt, attachments=[],
-            )
-            lock = message_locks.setdefault(str(thread.id), asyncio.Lock())
-            async with lock:
-                await handle_mention(
-                    synthetic_message, force_new_codex_thread=True, resolved_thread=thread,
+                lock = message_locks.setdefault(str(thread.id), asyncio.Lock())
+                async with lock:
+                    await handle_mention(
+                        synthetic_message, force_new_codex_thread=True, resolved_thread=thread,
+                        preclaimed_event=True,
+                    )
+            except Exception as exc:
+                with connect(db_path) as db:
+                    row = db.execute(
+                        "SELECT state FROM discord_inbox WHERE message_id=?", (event_id,),
+                    ).fetchone()
+                if row is not None and row["state"] == "received":
+                    store.finish_event(event_id, error=type(exc).__name__)
+                LOG.exception("Could not start a manual Discord conversation")
+                await interaction.followup.send(
+                    f"新しい会話を開始できませんでした: {str(exc)[:800]}", ephemeral=True,
                 )
-        except Exception as exc:
-            LOG.exception("Could not start a manual Discord conversation")
-            await interaction.followup.send(
-                f"新しい会話を開始できませんでした: {str(exc)[:800]}", ephemeral=True,
-            )
 
     @bot.tree.command(name="gpu", description="直近に記録されたGPU利用状況を表示")
     async def gpu(interaction: discord.Interaction) -> None:
@@ -1424,6 +1445,7 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
             f"```json\n{rendered[:1100]}\n```\n理由: {experiment.rationale[:300]}\n"
             "承認すると現在の環境設定を再検証してGPU待ちキューへ登録します。",
             view=PlanApprovalView(plan_id, int(requester), decide),
+            nonce=_notification_nonce(f"codex-next-proposal:{evaluation_id}"),
             allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=int(requester))]),
         )
 
@@ -1645,6 +1667,7 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
         message: discord.Message, *, force_new_codex_thread: bool = False,
         retry_event: bool = False, replace_codex_thread_id: str | None = None,
         resolved_thread: discord.Thread | None = None,
+        preclaimed_event: bool = False,
     ) -> None:
         thread_id: str
         parent_id: str
@@ -1707,7 +1730,15 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
                 for item in message.attachments
             ],
         }
-        if not store.accept_event(str(message.id), event_payload):
+        if preclaimed_event:
+            with connect(db_path) as db:
+                updated = db.execute(
+                    "UPDATE discord_inbox SET payload_json=? WHERE message_id=? AND state='received'",
+                    (json.dumps(event_payload, ensure_ascii=False), str(message.id)),
+                )
+                if updated.rowcount != 1:
+                    return
+        elif not store.accept_event(str(message.id), event_payload):
             if not retry_event or not store.retry_failed_event(str(message.id), event_payload):
                 return
         try:
