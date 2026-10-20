@@ -220,6 +220,51 @@ class DiscordBotConstructionTests(unittest.TestCase):
         self.assertEqual(store.events_in_state("processed")[0]["message_id"], "789")
         self.assertTrue(any("再開しました" in edit.get("content", "") for edit in processing.edits))
 
+    def test_codex_permission_expansion_is_answered_with_empty_grant(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+
+        class FakeCodex:
+            running = False
+
+            def __init__(self, **kwargs):
+                self.approval_handler = kwargs["approval_handler"]
+
+            async def close(self):
+                pass
+
+        class FakeThread:
+            id = 456
+            sent = []
+
+            async def send(self, content, **kwargs):
+                self.sent.append((content, kwargs))
+
+        thread = FakeThread()
+        with patch("lab_codex_scheduler.discord_bot.CodexAppServer", FakeCodex):
+            bot = build_bot(
+                root / "state.sqlite3", root / "inbox", root / "conversation",
+                DiscordPolicy(user_ids=frozenset({"123"})),
+            )
+        self.addCleanup(lambda: asyncio.run(bot.close()))
+        DiscordStore(root / "state.sqlite3").create_session(
+            thread_id="456", guild_id="1", parent_channel_id="2", starter_user_id="123",
+            settings_sha256="settings", codex_thread_id="codex-456",
+        )
+        bot.get_channel = lambda channel_id: thread
+
+        with patch.object(discord, "Thread", FakeThread):
+            result = asyncio.run(bot._lab_codex_server.approval_handler(
+                "item/permissions/requestApproval",
+                {"threadId": "456", "reason": "Allow network access"},
+            ))
+
+        self.assertEqual(result, {"permissions": {}})
+        self.assertEqual(len(thread.sent), 1)
+        self.assertIn("<@123>", thread.sent[0][0])
+        self.assertIn("安全側に倒して拒否", thread.sent[0][0])
+
     def test_history_recovery_requires_unique_marker_from_this_bot(self):
         class FakeThread:
             def __init__(self, messages):
