@@ -119,6 +119,104 @@ class DiscordBotConstructionTests(unittest.TestCase):
             }
         self.assertEqual(states, {event_key: "sent", recovery_key: "sent"})
 
+    def test_startup_recovers_received_message_into_persisted_codex_thread(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+
+        class FakeCodex:
+            running = True
+
+            def __init__(self):
+                self.resumed = []
+                self.turns = []
+
+            async def close(self):
+                pass
+
+            async def ensure_thread_loaded(self, thread_id):
+                self.resumed.append(thread_id)
+
+            async def run_turn(self, thread_id, prompt, **kwargs):
+                self.turns.append((thread_id, prompt))
+                await kwargs["on_event"]({
+                    "method": "item/agentMessage/delta", "params": {"delta": "再開しました"},
+                })
+
+        class FakeProcessing:
+            def __init__(self):
+                self.edits = []
+
+            async def edit(self, **kwargs):
+                self.edits.append(kwargs)
+
+        class FakeThread:
+            id = 456
+            parent_id = 2
+
+            def __init__(self):
+                self.parent = SimpleNamespace(id=2)
+                self.sent = []
+
+            async def fetch_message(self, message_id):
+                self.fetched_message_id = message_id
+                return message
+
+            async def send(self, content=None, **kwargs):
+                self.sent.append(content)
+                return processing
+
+        author = SimpleNamespace(id=123, bot=False, display_name="researcher")
+        guild = SimpleNamespace(id=1, filesize_limit=10_000_000)
+        processing = FakeProcessing()
+        channel = FakeThread()
+        message = SimpleNamespace(
+            id=789, author=author, channel=channel, guild=guild,
+            content="<@42> continue the experiment", attachments=[], mentions=[],
+        )
+        codex = FakeCodex()
+        policy = DiscordPolicy(
+            user_ids=frozenset({"123"}), guild_ids=frozenset({"1"}),
+            channel_ids=frozenset({"2"}),
+        )
+        with patch("lab_codex_scheduler.discord_bot.CodexAppServer", return_value=codex):
+            bot = build_bot(
+                root / "state.sqlite3", root / "inbox", root / "conversation", policy,
+            )
+        store = DiscordStore(root / "state.sqlite3")
+        store.create_session(
+            thread_id="456", guild_id="1", parent_channel_id="2", starter_user_id="123",
+            settings_sha256="saved-settings", codex_thread_id="codex-saved",
+        )
+        self.assertTrue(store.accept_event("789", {
+            "kind": "message", "guild_id": "1", "channel_id": "456", "user_id": "123",
+            "content": message.content, "attachments": [],
+        }))
+        bot._connection.user = SimpleNamespace(id=42)
+        bot.get_channel = lambda channel_id: channel
+        bot.is_closed = lambda: True
+        bot.tree.sync = lambda: asyncio.sleep(0)
+
+        async def recover():
+            try:
+                with patch.object(discord, "Thread", FakeThread):
+                    await bot.on_ready()
+                    tasks = {
+                        task.get_name(): task for task in asyncio.all_tasks()
+                        if task.get_name() in {"discord-notifications", "discord-inbox-recovery"}
+                    }
+                    await tasks["discord-inbox-recovery"]
+                    await tasks["discord-notifications"]
+            finally:
+                await bot.close()
+
+        asyncio.run(recover())
+        self.assertEqual(channel.fetched_message_id, 789)
+        self.assertEqual(codex.resumed, ["codex-saved"])
+        self.assertEqual(codex.turns, [("codex-saved", "continue the experiment")])
+        self.assertEqual(store.events_in_state("processed")[0]["message_id"], "789")
+        self.assertTrue(any("再開しました" in edit.get("content", "") for edit in processing.edits))
+
     def test_history_recovery_requires_unique_marker_from_this_bot(self):
         class FakeThread:
             def __init__(self, messages):
