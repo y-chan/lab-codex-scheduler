@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 import os
 import stat
 import tempfile
@@ -220,6 +221,73 @@ class DiscordBotConstructionTests(unittest.TestCase):
         self.assertEqual(codex.turns, [("codex-saved", "continue the experiment")])
         self.assertEqual(store.events_in_state("processed")[0]["message_id"], "789")
         self.assertTrue(any("再開しました" in edit.get("content", "") for edit in processing.edits))
+
+    def test_startup_does_not_replay_message_after_requester_access_is_revoked(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+
+        class FakeCodex:
+            running = True
+
+            async def close(self):
+                pass
+
+        class FakeThread:
+            id = 456
+            parent_id = 2
+
+            async def fetch_message(self, message_id):
+                self.fetched_message_id = message_id
+                return message
+
+        author = SimpleNamespace(id=123, bot=False)
+        guild = SimpleNamespace(id=1)
+        channel = FakeThread()
+        message = SimpleNamespace(
+            id=789, author=author, channel=channel, guild=guild,
+            content="<@42> continue", attachments=[], mentions=[],
+        )
+        with patch("lab_codex_scheduler.discord_bot.CodexAppServer", return_value=FakeCodex()):
+            bot = build_bot(
+                root / "state.sqlite3", root / "inbox", root / "conversation",
+                DiscordPolicy(
+                    user_ids=frozenset({"456"}), guild_ids=frozenset({"1"}),
+                    channel_ids=frozenset({"2"}),
+                ),
+            )
+        store = DiscordStore(root / "state.sqlite3")
+        store.accept_event("789", {
+            "kind": "message", "guild_id": "1", "channel_id": "456", "user_id": "123",
+            "content": message.content, "attachments": [],
+        })
+        bot._connection.user = SimpleNamespace(id=42)
+        bot.get_channel = lambda channel_id: channel
+        bot.is_closed = lambda: True
+        bot.tree.sync = lambda: asyncio.sleep(0)
+
+        async def recover():
+            try:
+                with patch.object(discord, "Thread", FakeThread):
+                    await bot.on_ready()
+                    tasks = {
+                        task.get_name(): task for task in asyncio.all_tasks()
+                        if task.get_name() in {"discord-notifications", "discord-inbox-recovery"}
+                    }
+                    await tasks["discord-inbox-recovery"]
+                    await tasks["discord-notifications"]
+            finally:
+                await bot.close()
+
+        asyncio.run(recover())
+        failed = store.events_in_state("failed")
+        self.assertEqual(failed[0]["error"], "access_revoked_before_recovery")
+        notices = store.claim_notifications()
+        self.assertEqual(len(notices), 1)
+        notice = json.loads(str(notices[0]["payload_json"]))
+        self.assertEqual(notice["kind"], "inbox_recovery")
+        self.assertEqual(notice["requester_id"], "123")
+        self.assertIn("許可設定が変わった", notice["message"])
 
     def test_codex_permission_expansion_is_answered_with_empty_grant(self):
         temp = tempfile.TemporaryDirectory()
