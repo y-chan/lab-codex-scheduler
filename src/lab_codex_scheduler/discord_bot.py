@@ -6,6 +6,7 @@ import asyncio
 import base64
 from dataclasses import asdict
 from datetime import UTC, datetime
+import hashlib
 import io
 import json
 import logging
@@ -44,6 +45,11 @@ from lab_codex_scheduler.tb_media import extract_tensorboard_media
 
 LOG = logging.getLogger(__name__)
 _SESSION_MARKER_PREFIX = "lab-cds-recovery:v1:"
+
+
+def _notification_nonce(event_key: str) -> str:
+    """Stable Discord message nonce for recent-window delivery retries."""
+    return hashlib.blake2b(event_key.encode("utf-8"), digest_size=12).hexdigest()
 
 
 def _session_marker(thread_id: str, starter_user_id: str, codex_thread_id: str) -> str:
@@ -1546,6 +1552,7 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
                         await destination.send(
                             f"<@{requester}> {status_text}。ジョブ `{job_id}` / exit={payload.get('exit_code')}",
                             files=files,
+                            nonce=_notification_nonce(event_key),
                             allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=int(requester))]),
                         )
                         store.complete_notification(event_key)

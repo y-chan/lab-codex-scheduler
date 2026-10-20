@@ -5,7 +5,7 @@ description = "Deterministic controller for research ML experiments"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "discord.py>=2.4,<3",
+    "discord.py>=2.5,<3",
 ]
 
 [project.optional-dependencies]

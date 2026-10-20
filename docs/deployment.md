@@ -2,6 +2,38 @@
 
 この雛形はLinuxのsystemd user service向けです。パス、Unix user、環境ファイルは配備先で編集してください。ユニットの起動・有効化はこのリポジトリでは行いません。
 
+## 起動前の設定
+
+リポジトリの配置先で依存を準備します。実行環境設定はサンプルをコピーして、ユーザーが登録したOpenSSH aliasと実際の作業ディレクトリに合わせます。`config-check`は構文・値を検証し、`host-test`は指定Hostへ実際にSSH接続します。
+
+```sh
+install -d -m 700 ~/.config/lab-codex-scheduler
+install -m 600 config/environments.example.toml ~/.config/lab-codex-scheduler/environments.toml
+uv sync --locked --extra analysis
+uv run --locked lab-codex-scheduler config-check ~/.config/lab-codex-scheduler/environments.toml
+uv run --locked lab-codex-scheduler hosts
+uv run --locked lab-codex-scheduler host-test <registered-host-alias>
+uv run --locked lab-codex-scheduler db-init
+```
+
+`host-test`の前に、aliasが対象ホストを指すこととknown_hostsに登録済みであることを確認してください。`gpu`はNVIDIA GPU情報をリモート取得する読み取り操作です。GPU予約や学習の起動は行いません。
+
+Discord用の`secrets.env`には`DISCORD_BOT_TOKEN`だけを保存します。User/Guild/Channel allowlistはsystemd drop-in等のアクセス制御された設定から渡します。トークンをGit、issue、会話、ログへ転記しません。
+
+```sh
+install -m 600 /dev/null ~/.config/lab-codex-scheduler/secrets.env
+${EDITOR:-vi} ~/.config/lab-codex-scheduler/secrets.env
+```
+
+Discord Developer PortalではBotのMessage Content Intentを有効にし、Guildへ招待します。制御サーバーでsystemdを使うUnix userとしてCodex CLIのログインを確認し、`command -v codex`の場所がユニットの`PATH`に含まれるようにしてください。
+
+```sh
+codex login status
+command -v codex
+```
+
+systemdへ登録する前に、検証用Guild、限定allowlist、GPUを使わないDiscord操作を確認してください。`gpu`や`scheduler`を使う場合は、最初に設定済みGPU Hostで状態取得だけを行い、専用の小さい検証ジョブの開始・停止は運用者が対象IDと条件を確認してから実行します。
+
 ## Scheduler
 
 `~/.config/systemd/user/lab-codex-scheduler.service`:

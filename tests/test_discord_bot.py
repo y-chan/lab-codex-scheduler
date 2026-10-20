@@ -7,12 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from lab_codex_scheduler.discord_bot import (
-    ConfirmNewConversationView, _completion_artifact_candidates,
+    ConfirmNewConversationView, _completion_artifact_candidates, _notification_nonce,
     _extract_json_object, _recover_session_marker,
     _replace_session_markers, _session_marker, _should_handle_message, build_bot,
 )
 import discord
-from lab_codex_scheduler.discord_state import DiscordPolicy
+from lab_codex_scheduler.discord_state import DiscordPolicy, DiscordStore
 from lab_codex_scheduler.db import connect
 from lab_codex_scheduler.jobs import JobRepository, JobSpec
 from lab_codex_scheduler.proposals import _scalar_context
@@ -40,6 +40,71 @@ class DiscordBotConstructionTests(unittest.TestCase):
     def test_extracts_schema_json_from_final_message_or_fence(self):
         self.assertEqual(_extract_json_object(["preface {\"answer\": 1} trailing"]), {"answer": 1})
         self.assertEqual(_extract_json_object(["```json\n{\"answer\": 2}\n```"]), {"answer": 2})
+
+    def test_notification_nonce_is_stable_compact_and_event_specific(self):
+        first = _notification_nonce("job:123:succeeded")
+        self.assertEqual(first, _notification_nonce("job:123:succeeded"))
+        self.assertNotEqual(first, _notification_nonce("job:123:failed"))
+        self.assertLessEqual(len(first), 25)
+        with discord.http.handle_message_parameters(content="notice", nonce=first) as params:
+            self.assertEqual(params.payload["nonce"], first)
+            self.assertTrue(params.payload["enforce_nonce"])
+
+    def test_outbox_delivery_uses_event_nonce_and_marks_sent(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        class FakeCodex:
+            running = True
+
+            async def close(self):
+                pass
+
+        codex = FakeCodex()
+        with patch("lab_codex_scheduler.discord_bot.CodexAppServer", return_value=codex):
+            bot = build_bot(
+                root / "state.sqlite3", root / "inbox", root / "conversation",
+                DiscordPolicy(user_ids=frozenset({"123"})),
+            )
+        self.addCleanup(lambda: asyncio.run(bot.close()))
+        sent = {}
+        stopped = False
+
+        class Destination:
+            async def send(self, content, **kwargs):
+                nonlocal stopped
+                sent.update(kwargs)
+                stopped = True
+
+        destination = Destination()
+        bot.get_channel = lambda channel_id: destination
+        bot.is_closed = lambda: stopped
+        bot.tree.sync = lambda: asyncio.sleep(0)
+        event_key = "job-123-failed"
+        store = DiscordStore(root / "state.sqlite3")
+        store.enqueue_notification(
+            event_key, "456", {"requester_id": "123", "status": "failed", "job_id": "job-123"},
+        )
+
+        async def deliver_once():
+            await bot.on_ready()
+            worker = next(task for task in asyncio.all_tasks()
+                          if task.get_name() == "discord-notifications")
+            await asyncio.sleep(0)
+            worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(deliver_once())
+        self.assertEqual(sent["nonce"], _notification_nonce(event_key))
+        self.assertEqual(store.claim_notifications(), [])
+        with connect(root / "state.sqlite3") as db:
+            state = db.execute(
+                "SELECT state FROM notifications WHERE event_key=?", (event_key,),
+            ).fetchone()["state"]
+        self.assertEqual(state, "sent")
 
     def test_history_recovery_requires_unique_marker_from_this_bot(self):
         class FakeThread:

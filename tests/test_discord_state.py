@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from lab_codex_scheduler.db import connect, initialize
@@ -82,6 +83,13 @@ class DiscordStoreTests(unittest.TestCase):
         batch = self.store.claim_notifications()
         self.assertEqual([row["event_key"] for row in batch], ["job-1-done"])
         self.assertEqual(self.store.claim_notifications(), [])
+        with connect(self.store.path) as db:
+            db.execute(
+                "UPDATE notifications SET claimed_at=? WHERE event_key=?",
+                ((datetime.now(UTC) - timedelta(seconds=61)).isoformat(), "job-1-done"),
+            )
+        reclaimed = self.store.claim_notifications()
+        self.assertEqual([row["event_key"] for row in reclaimed], ["job-1-done"])
         self.assertTrue(self.store.renew_notification("job-1-done"))
         self.store.complete_notification("job-1-done")
         self.assertFalse(self.store.renew_notification("job-1-done"))

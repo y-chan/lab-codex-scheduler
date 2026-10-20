@@ -591,7 +591,7 @@ analysis = [
 
 [package.metadata]
 requires-dist = [
-    { name = "discord-py", specifier = ">=2.4,<3" },
+    { name = "discord-py", specifier = ">=2.5,<3" },
     { name = "matplotlib", marker = "extra == 'analysis'", specifier = ">=3.8" },
     { name = "tensorboard", marker = "extra == 'analysis'", specifier = ">=2.14" },
 ]

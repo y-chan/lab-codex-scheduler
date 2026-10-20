@@ -155,7 +155,9 @@ class DiscordStore:
             raise ValueError("limit must be between 1 and 100")
         with connect(self.path) as db:
             db.execute("BEGIN IMMEDIATE")
-            stale_before = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+            # Discord enforces nonce uniqueness only for recent sends. Reclaim
+            # an interrupted request before that short server-side window expires.
+            stale_before = (datetime.now(UTC) - timedelta(seconds=60)).isoformat()
             db.execute(
                 "UPDATE notifications SET state='pending',claimed_at=NULL "
                 "WHERE state='sending' AND claimed_at < ?", (stale_before,)
