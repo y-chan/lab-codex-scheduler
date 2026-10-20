@@ -18,7 +18,7 @@
 
 受け入れ：Controller管理ジョブ間でGPUを二重予約しない。GPU履歴不足、共有プロセス、空き不足、通信断、直前競合で安全に待機。外部プロセスを停止しない。
 
-実装済み：待機ジョブのtimezone付き`not_before`時刻とDiscord `/schedule`による一回限りの遅延開始。依頼者はDiscord `/pause`・`/resume`またはCLI `job-pause`・`job-resume`で待機ジョブを一時停止・再開できます。Pauseとdispatch開始はDB transactionで競合を防ぎます。実行中プロセスをsignal停止する操作は未対応です。
+実装済み：待機ジョブのtimezone付き`not_before`時刻とDiscord `/schedule`による一回限りの遅延開始。依頼者はDiscord `/pause`・`/resume`またはCLI `job-pause`・`job-resume`で待機ジョブを一時停止・再開できます。Pauseとdispatch開始はDB transactionで競合を防ぎます。実行中ジョブもSupervisorへジョブID限定のSIGSTOP/SIGCONTを送り、一時停止中もGPU予約を維持します。Dockerはコンテナ全体へ作用させず、`LAB_CDS_JOB_ID`が一致するコンテナ内プロセスだけをsignalします。pause中の停止要求は対象をresumeしてから終了させます。Fake Supervisor、native process group、Dockerコマンドを模したローカルプロセスでpause/resume/cancelと予約保持を検証。GPU実機/Docker実環境での確認は未実施です。
 
 実装済み：期限付きジョブ、24時間前/待機中期限切れ/実行中期限超過通知、確定失敗だけを対象とする上限付き再試行と試行別リモートUUID/履歴、最大100件のatomic条件スイープ（CLI/Discord）。systemd user serviceの雛形は`docs/deployment.md`にありますが、実環境への登録・再起動試験は未実施。
 

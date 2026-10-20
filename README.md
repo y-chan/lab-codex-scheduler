@@ -63,9 +63,9 @@ uv run --extra analysis lab-codex-scheduler scheduler --interval-seconds 30
 uv run lab-codex-scheduler enqueue-sweep --environment pro6000-uv --spec sweep.json
 ```
 
-常駐`scheduler`を起動すると、登録HostのGPU状態をポーリングし、空き判定、予約、直前再確認を経てキューから最大1件ずつ起動します。共有GPUは他ユーザーによって競合し得ます。Controllerは他ユーザーのプロセスに作用しません。依存関係のあるジョブは依存先が成功するまで待ちます。GPU待ちの間は依頼者がDiscord `/pause`・`/resume`またはCLI `job-pause`・`job-resume`で一時停止・再開できます。実行中プロセスをsignal停止するpause操作には対応していません。評価コマンドを環境設定した場合、成功したexperimentから一度だけ評価ジョブを自動登録し、親ジョブ依存としてGPUキューへ送ります。`{job_id}`、`{artifact_dir}`、`{log_dir}`をargv内で利用できます。設定変更後に既存ジョブから自動評価は行いません。手動の後続ジョブはDiscord `/submit`の`depends_on_job_id`またはCLI `--depends-on JOB_UUID`でも登録できます。確定した異常終了だけを指定回数再試行し、通信断で状態不明のジョブは再実行しません。期限を過ぎた待機ジョブは起動せず、実行中ジョブは停止せず期限超過を通知します。期限通知には親ジョブと依存する後続ジョブの状態を最大12件表示します。十分な履歴がある場合は依存経路の計算時間を推定しますが、GPU待ち時間や競合は含めず、実完了時刻を保証しません。
+常駐`scheduler`を起動すると、登録HostのGPU状態をポーリングし、空き判定、予約、直前再確認を経てキューから最大1件ずつ起動します。共有GPUは他ユーザーによって競合し得ます。Controllerは他ユーザーのプロセスに作用しません。依存関係のあるジョブは依存先が成功するまで待ちます。依頼者はDiscord `/pause`・`/resume`またはCLI `job-pause`・`job-resume`で待機中または実行中の管理対象ジョブを一時停止・再開できます。実行中pause中もGPU予約を保持します。native/uv/venvはジョブ固有のプロセスグループ、Dockerは`LAB_CDS_JOB_ID`が一致するコンテナ内プロセスだけをsignalします。Dockerコンテナ全体には作用しません。評価コマンドを環境設定した場合、成功したexperimentから一度だけ評価ジョブを自動登録し、親ジョブ依存としてGPUキューへ送ります。`{job_id}`、`{artifact_dir}`、`{log_dir}`をargv内で利用できます。設定変更後に既存ジョブから自動評価は行いません。手動の後続ジョブはDiscord `/submit`の`depends_on_job_id`またはCLI `--depends-on JOB_UUID`でも登録できます。確定した異常終了だけを指定回数再試行し、通信断で状態不明のジョブは再実行しません。期限を過ぎた待機ジョブは起動せず、実行中ジョブは停止せず期限超過を通知します。期限通知には親ジョブと依存する後続ジョブの状態を最大12件表示します。十分な履歴がある場合は依存経路の計算時間を推定しますが、GPU待ち時間や競合は含めず、実完了時刻を保証しません。
 
-`job-status <UUID>` と `job-cancel <UUID>` は管理対象ジョブの状態確認・停止です。`job-pause <UUID>` と `job-resume <UUID>` はキュー待ちジョブの一時停止・再開です。`submit` CLIはGPUキューを通さないため、手動でリソース確認後に `--confirm-resource-check` を指定します。
+`job-status <UUID>` と `job-cancel <UUID>` は管理対象ジョブの状態確認・停止です。`job-pause <UUID>` と `job-resume <UUID>` は待機中または実行中の一時停止・再開です。実行中pauseではGPU予約を保持します。`submit` CLIはGPUキューを通さないため、手動でリソース確認後に `--confirm-resource-check` を指定します。
 
 ## TensorBoard解析
 
@@ -87,7 +87,7 @@ uv run lab-codex-scheduler discord \
   --config ~/.config/lab-codex-scheduler/environments.toml
 ```
 
-利用可能な主な操作は `/status`、`/gpu`、`/queue`、`/submit`、`/sweep`、`/job`、`/depend`、`/cancel`、`/pause`、`/resume`、`/schedule`、`/logs`、`/plot`、`/tb-media`、`/artifacts`、`/artifact`、`/audio-utterances`、`/compare-audio`、`/plan`、`/report`、`/instructions`、`/instructions-history`、`/instructions-restore` です。`/pause`と`/resume`は依頼者自身のGPU待ちジョブだけに使えます。`/plan` は登録済み環境から構造化案を作りますが、ボタン承認までジョブを作成しません。承認後はGPU待ちキューへ登録されます。計画ボタンはBot再起動後もpending状態から復元します。
+利用可能な主な操作は `/status`、`/gpu`、`/queue`、`/submit`、`/sweep`、`/job`、`/depend`、`/cancel`、`/pause`、`/resume`、`/schedule`、`/logs`、`/plot`、`/tb-media`、`/artifacts`、`/artifact`、`/audio-utterances`、`/compare-audio`、`/plan`、`/report`、`/instructions`、`/instructions-history`、`/instructions-restore` です。`/pause`と`/resume`は依頼者自身の待機中・実行中ジョブに使えます。実行中ジョブはジョブ固有のプロセスだけを一時停止し、GPU予約を保持します。`/plan` は登録済み環境から構造化案を作りますが、ボタン承認までジョブを作成しません。承認後はGPU待ちキューへ登録されます。計画ボタンはBot再起動後もpending状態から復元します。
 
 通常Channelのメンションはスレッドを作り、登録済みDiscord ThreadとCodex Threadの対応を再利用します。Botが投稿した識別Embedから履歴復旧を試み、複数IDが見つかるなど曖昧な場合は別会話へ接続せず、元の依頼者だけが押せる確認ボタンから新しいCodex会話を開始できます。CodexのTurnはThread単位に直列化し、進捗をDiscordへ表示します。ファイル操作承認は依頼者限定UIを使い、権限拡張要求は拒否します。
 

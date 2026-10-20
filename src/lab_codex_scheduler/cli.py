@@ -91,8 +91,8 @@ def parser() -> argparse.ArgumentParser:
     cancel = commands.add_parser("job-cancel", help="管理対象ジョブへ停止要求")
     cancel.add_argument("job_id")
     cancel.add_argument("--db", type=Path, default=default_db_path())
-    for command, help_text in (("job-pause", "GPU待ちジョブを一時停止"),
-                               ("job-resume", "一時停止したGPU待ちジョブを再開")):
+    for command, help_text in (("job-pause", "待機中または実行中の管理対象ジョブを一時停止"),
+                               ("job-resume", "一時停止した管理対象ジョブを再開")):
         control = commands.add_parser(command, help=help_text)
         control.add_argument("job_id")
         control.add_argument("--db", type=Path, default=default_db_path())
@@ -249,11 +249,9 @@ def main(argv: list[str] | None = None) -> int:
                               "job_ids": [spec.id for spec in specs]}, ensure_ascii=False))
         elif args.command in {"job-pause", "job-resume"}:
             repository = JobRepository(str(args.db))
-            _, current, _ = repository.get(args.job_id)
             paused = args.command == "job-pause"
-            repository.set_queued_paused(args.job_id, paused)
-            print(json.dumps({"job_id": args.job_id, "status": current,
-                              "paused": paused}, ensure_ascii=False))
+            result = repository.set_paused(args.job_id, paused)
+            print(json.dumps({**result, "paused": paused}, ensure_ascii=False))
         elif args.command in {"job-status", "job-cancel"}:
             repo = JobRepository(str(args.db))
             spec, local_status, _ = repo.get(args.job_id)
@@ -270,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
             if remote_status in {"running", "succeeded", "failed", "canceled", "unknown"} and \
                     remote_status != local_status:
                 repo.transition(args.job_id, remote_status, remote.get("exit_code"))
+            if remote_status in {"running", "paused"}:
+                repo.set_active_paused(args.job_id, remote_status == "paused")
             if args.command == "job-status" and remote_status in {"succeeded", "failed", "canceled"}:
                 GPUReservationStore(args.db).release(args.job_id)
             with connect(args.db) as db:

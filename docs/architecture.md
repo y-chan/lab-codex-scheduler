@@ -41,11 +41,11 @@ Dockerの`workdir`はコンテナ内パスです。リモートSupervisor自体�
 
 SSHセッション内で学習プロセスを直接実行しません。リモートの軽量SupervisorがジョブIDごとに `state.json`、stdout/stderr、終了コードを保管し、独立したセッションで学習を起動します。開始は冪等にし、同じジョブIDで既存状態を見つけたら二つ目を起動しません。Controller再起動後はDBのジョブIDでSupervisorへ照会します。
 
-通信断は `UNKNOWN` として扱い、即座に失敗や再試行へ遷移させません。再接続後にリモート状態、PIDのプロセス識別情報、終了コードを照合します。停止要求はSupervisorが所有するジョブIDとプロセスグループだけを対象にします。GPUサーバーに軽量常駐Agentを置けない場合に備え、SSHで呼ぶ単一のPythonラッパー方式を初期案とします。
+通信断は `UNKNOWN` として扱い、即座に失敗や再試行へ遷移させません。再接続後にリモート状態、PIDのプロセス識別情報、終了コードを照合します。native/uv/venvはSupervisorが作成したジョブID固有のプロセスグループを操作します。Dockerはコンテナ全体をpause/停止せず、`LAB_CDS_JOB_ID`環境変数が一致するコンテナ内プロセスだけを操作します。Supervisor上の状態とGPU予約はpause中も保持し、resume後に学習を続けます。GPUサーバーに軽量常駐Agentを置けない場合に備え、SSHで呼ぶ単一のPythonラッパー方式を初期案とします。
 
 ## SQLiteの主要データ
 
-- `jobs`：ID、状態、依頼者、優先度、環境ID、argv、設定ハッシュ、現在試行のコードRevision、選択GPU、開始・終了時刻、終了コード、再試行回数、待機中のpause flag。
+- `jobs`：ID、状態、依頼者、優先度、環境ID、argv、設定ハッシュ、現在試行のコードRevision、選択GPU、開始・終了時刻、終了コード、再試行回数、待機/実行中のpause flag。
 - `job_attempts`：試行別remote UUID、状態、選択GPU、コードRevision、開始・終了時刻、終了コード。
 - `job_dependencies`：有向辺。挿入時に循環を拒否します。
 - `experiment_plans`：Codexの構造化提案、依頼者、実行環境、承認状態、発行したジョブID。自動次案は元evaluation job IDを一意に保持。
@@ -55,7 +55,7 @@ SSHセッション内で学習プロセスを直接実行しません。リモ�
 - `discord_inbox`：Discord Message IDによる重複受付防止と処理結果。
 - `notifications`：一意イベントキー、送信先、本文、配送状態、lease時刻。障害後にlease期限切れを再試行します。
 
-GPU待ちジョブの一時停止は`jobs.paused`に保存し、dispatch候補から除外します。依頼者はDiscord `/pause`・`/resume`またはCLIで待機ジョブを止めたり再開したりできます。起動中・実行中の学習プロセスへのsignal停止は行いません。
+待機ジョブのpauseは`jobs.paused`に保存し、dispatch候補から除外します。実行中ジョブは依頼者のDiscord `/pause`・`/resume`またはCLI操作で、管理対象プロセスだけへSIGSTOP/SIGCONTを送ります。実行中のpauseではGPU予約を保持するため、他ジョブへ同じGPUを割り当てません。Dockerは`LAB_CDS_JOB_ID`が一致するプロセスだけへsignalを送り、コンテナ全体には作用させません。停止操作もpause中のジョブをresumeしてから管理対象プロセスを終了します。
 
 SQLiteは初期の単一制御ノードで十分です。DBの書込みロック競合が継続する、または複数制御ノードが必要になった段階でPostgreSQLを再評価します。
 

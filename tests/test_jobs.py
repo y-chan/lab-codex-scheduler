@@ -144,6 +144,133 @@ class RemoteSupervisorTests(unittest.TestCase):
             result = self.wait_terminal(supervisor, spec)
             self.assertEqual(result["status"], "canceled")
 
+    def test_pause_and_resume_signal_only_the_managed_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            counter = Path(root) / "counter.txt"
+            source = (
+                "import pathlib,time\n"
+                f"path=pathlib.Path({str(counter)!r})\n"
+                "value=0\n"
+                "while True:\n"
+                " value+=1\n"
+                " path.write_text(str(value))\n"
+                " time.sleep(.02)\n"
+            )
+            supervisor = RemoteSupervisor(LocalAgentTransport(), remote_root=str(Path(root) / "jobs"))
+            env = Environment("local", "offline-host", "native", root)
+            spec = JobSpec.create(env, [sys.executable, "-c", source])
+            supervisor.start(spec)
+            deadline = time.monotonic() + 3
+            while not counter.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(counter.exists())
+            self.assertEqual(supervisor.pause(spec)["status"], "paused")
+            before = counter.read_text()
+            time.sleep(0.15)
+            self.assertEqual(counter.read_text(), before)
+            self.assertEqual(supervisor.status(spec)["status"], "paused")
+            self.assertEqual(supervisor.resume(spec)["status"], "running")
+            deadline = time.monotonic() + 3
+            while counter.read_text() == before and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertNotEqual(counter.read_text(), before)
+            self.assertEqual(supervisor.stop(spec)["status"], "stopping")
+            self.assertEqual(self.wait_terminal(supervisor, spec)["status"], "canceled")
+
+    def test_stop_resumes_a_paused_process_before_terminating_it(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            supervisor = RemoteSupervisor(LocalAgentTransport(), remote_root=str(Path(root) / "jobs"))
+            env = Environment("local", "offline-host", "native", root)
+            spec = JobSpec.create(env, ["sleep", "10"])
+            supervisor.start(spec)
+            deadline = time.monotonic() + 3
+            while supervisor.status(spec)["status"] == "starting" and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(supervisor.pause(spec)["status"], "paused")
+            self.assertEqual(supervisor.stop(spec)["status"], "stopping")
+            self.assertEqual(self.wait_terminal(supervisor, spec)["status"], "canceled")
+
+    def test_docker_pause_and_cancel_target_only_the_job_id_process(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            fake_bin = root_path / "bin"
+            fake_bin.mkdir()
+            registry = root_path / "container-processes"
+            registry.mkdir()
+            docker = fake_bin / "docker"
+            docker.write_text(
+                "#!" + sys.executable + "\n"
+                "import json, os, pathlib, signal, sys\n"
+                f"registry=pathlib.Path({str(registry)!r})\n"
+                "args=sys.argv[1:]\n"
+                "assert args.pop(0)=='exec'\n"
+                "job_override=None\n"
+                "while args and args[0] in {'-e','--env','-w','--workdir','-u','--user'}:\n"
+                " option=args.pop(0); value=args.pop(0)\n"
+                " if option in {'-e','--env'} and value.startswith('LAB_CDS_JOB_ID='):\n"
+                "  job_override=value.split('=',1)[1]\n"
+                "while args and args[0].startswith(('--env=','--workdir=','--user=')):\n"
+                " value=args.pop(0)\n"
+                " if value.startswith('--env=LAB_CDS_JOB_ID='):\n"
+                "  job_override=value.split('=',2)[2]\n"
+                "args.pop(0) # container\n"
+                "if job_override=='lab-cds-control':\n"
+                " job=args[-2]; signum=int(args[-1]); pid=int((registry/job).read_text())\n"
+                " try: os.kill(pid,signum); sent=1\n"
+                " except ProcessLookupError: sent=0\n"
+                " print(json.dumps({'signaled':sent}))\n"
+                "else:\n"
+                " job=os.environ['LAB_CDS_JOB_ID']; (registry/job).write_text(str(os.getpid()))\n"
+                " os.execvpe(args[0],args,os.environ)\n",
+                encoding="utf-8",
+            )
+            docker.chmod(0o755)
+            supervisor = RemoteSupervisor(
+                LocalAgentTransport(), remote_root=str(root_path / "jobs"),
+            )
+            environment = Environment(
+                "docker", "offline-host", "docker", "/workspace", container="research",
+            )
+            counter = root_path / "docker-counter.txt"
+            source = (
+                "import pathlib,time\n"
+                f"path=pathlib.Path({str(counter)!r})\n"
+                "value=0\n"
+                "while True:\n"
+                " value+=1\n"
+                " path.write_text(str(value))\n"
+                " time.sleep(.02)\n"
+            )
+            spec = JobSpec.create(environment, [sys.executable, "-c", source])
+            old_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = str(fake_bin) + os.pathsep + old_path
+            try:
+                supervisor.start(spec)
+                deadline = time.monotonic() + 3
+                while not counter.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(counter.exists())
+                self.assertEqual(supervisor.pause(spec)["status"], "paused")
+                before = counter.read_text()
+                time.sleep(0.15)
+                self.assertEqual(counter.read_text(), before)
+                self.assertEqual(supervisor.resume(spec)["status"], "running")
+                deadline = time.monotonic() + 3
+                while counter.read_text() == before and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertNotEqual(counter.read_text(), before)
+                self.assertEqual(supervisor.pause(spec)["status"], "paused")
+                self.assertEqual(supervisor.stop(spec)["status"], "stopping")
+                self.assertEqual(self.wait_terminal(supervisor, spec)["status"], "canceled")
+            finally:
+                try:
+                    if supervisor.status(spec).get("status") in {"running", "paused", "stopping"}:
+                        supervisor.stop(spec)
+                        self.wait_terminal(supervisor, spec)
+                except (OSError, RuntimeError, subprocess.SubprocessError):
+                    pass
+                os.environ["PATH"] = old_path
+
     def test_gpu_process_classifier_distinguishes_supervised_tree_from_external_pid(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             supervisor = RemoteSupervisor(LocalAgentTransport(), remote_root=root)

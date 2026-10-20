@@ -106,6 +106,68 @@ def same_worker(pid):
             return False
     except OSError:
         return False
+def docker_container(command):
+    if not isinstance(command, list) or command[:2] != ["docker", "exec"]:
+        return None
+    index = 2
+    while index < len(command):
+        token = command[index]
+        if token in {"-e", "--env", "-w", "--workdir", "-u", "--user"}:
+            index += 2
+        elif token.startswith(("--env=", "--workdir=", "--user=")):
+            index += 1
+        else:
+            return command[index]
+    return None
+def signal_docker_job(spec, signum):
+    container = docker_container(spec.get("command", []))
+    if not container:
+        raise RuntimeError("managed Docker container is missing from job command")
+    code = r"""import json, os, pathlib, sys
+job = sys.argv[1]
+signum = int(sys.argv[2])
+needle = ("LAB_CDS_JOB_ID=" + job).encode()
+pids = []
+for entry in pathlib.Path("/proc").iterdir():
+    if not entry.name.isdigit():
+        continue
+    try:
+        env = (entry / "environ").read_bytes().split(bytes([0]))
+    except OSError:
+        continue
+    if needle in env and int(entry.name) != os.getpid():
+        pids.append(int(entry.name))
+sent = 0
+for pid in pids:
+    try:
+        os.kill(pid, signum)
+        sent += 1
+    except (ProcessLookupError, PermissionError):
+        pass
+print(json.dumps({"signaled": sent}))"""
+    try:
+        result = subprocess.run(["docker", "exec", "--env", "LAB_CDS_JOB_ID=lab-cds-control",
+            container, "python3", "-c", code, JOB, str(signum)], capture_output=True,
+            text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("could not signal the managed process inside its Docker container") from exc
+    if result.returncode:
+        raise RuntimeError("could not signal the managed process inside its Docker container")
+    try:
+        count = json.loads(result.stdout).get("signaled")
+    except (json.JSONDecodeError, AttributeError) as exc:
+        raise RuntimeError("Docker process signal returned invalid data") from exc
+    if not isinstance(count, int) or count < 0:
+        raise RuntimeError("Docker process signal returned invalid data")
+    return count
+def signal_managed_job(state, spec, signum):
+    pid = int(state.get("pid", -1))
+    if not same_worker(pid):
+        return False
+    if docker_container(spec.get("command", [])):
+        return signal_docker_job(spec, signum) > 0
+    os.killpg(pid, signum)
+    return True
 mode = sys.argv[1]
 if mode == "start":
     codec = __import__("base64")
@@ -157,9 +219,7 @@ elif mode == "worker":
         stdout_log.close()
         stderr_log.close()
     previous = json.loads(STATE.read_text()) if STATE.exists() else {}
-    canceled = previous.get("status") == "canceled" or (
-        previous.get("status") == "stopping" and exit_code < 0
-    )
+    canceled = previous.get("status") in {"canceled", "stopping"}
     write_state({"job_id": JOB, "status": "canceled" if canceled else
         ("succeeded" if exit_code == 0 else "failed"), "pid": os.getpid(),
         "exit_code": exit_code, "finished_at": time.time()})
@@ -170,18 +230,76 @@ elif mode == "status":
         state = json.loads(STATE.read_text())
         if state["status"] == "starting" and time.time() - state.get("started_at", 0) > 60:
             state["status"] = "unknown"
-        if state["status"] == "running" and not same_worker(state["pid"]):
+        if state["status"] in {"running", "paused", "stopping"} and not same_worker(state["pid"]):
             state["status"] = "unknown"
         print(json.dumps(state))
+elif mode in {"pause", "resume"}:
+    if not STATE.exists():
+        print(json.dumps({"job_id": JOB, "status": "unknown"}))
+    else:
+        state = json.loads(STATE.read_text())
+        target = "paused" if mode == "pause" else "running"
+        expected = "running" if mode == "pause" else "paused"
+        if state.get("status") == target:
+            if not same_worker(int(state.get("pid", -1))):
+                state["status"] = "unknown"
+                write_state(state)
+            else:
+                state.pop("error", None)
+                write_state(state)
+            print(json.dumps(state))
+        elif state.get("status") != expected or not same_worker(int(state.get("pid", -1))):
+            state["status"] = "unknown" if state.get("status") == expected else state.get("status", "unknown")
+            print(json.dumps(state))
+        else:
+            spec = json.loads((DIR / "spec.json").read_text())
+            try:
+                if mode == "resume":
+                    # Persist before SIGCONT so a fast-finish worker cannot be overwritten.
+                    state["status"] = "running"
+                    state.pop("error", None)
+                    write_state(state)
+                    if not signal_managed_job(state, spec, signal.SIGCONT):
+                        state["status"] = "unknown"
+                        write_state(state)
+                elif signal_managed_job(state, spec, signal.SIGSTOP):
+                    state["status"] = "paused"
+                    state.pop("error", None)
+                    write_state(state)
+            except (OSError, RuntimeError, ValueError) as exc:
+                state["status"] = expected
+                state["error"] = str(exc)[:200]
+                write_state(state)
+            print(json.dumps(state))
 elif mode == "stop":
     if not STATE.exists():
         print(json.dumps({"job_id": JOB, "status": "unknown"}))
     else:
         state = json.loads(STATE.read_text())
-        if state["status"] == "running" and same_worker(state["pid"]):
-            os.killpg(state["pid"], signal.SIGTERM)
+        if state["status"] in {"running", "paused"} and same_worker(state["pid"]):
+            previous_status = state["status"]
             state["status"] = "stopping"
+            state.pop("error", None)
             write_state(state)
+            spec = json.loads((DIR / "spec.json").read_text())
+            resumed = False
+            try:
+                if docker_container(spec.get("command", [])):
+                    resumed = previous_status == "paused" and signal_docker_job(
+                        spec, signal.SIGCONT
+                    ) > 0
+                    sent = signal_docker_job(spec, signal.SIGTERM)
+                    if sent == 0:
+                        state["status"] = previous_status
+                        write_state(state)
+                else:
+                    os.killpg(int(state["pid"]), signal.SIGCONT)
+                    resumed = previous_status == "paused"
+                    os.killpg(int(state["pid"]), signal.SIGTERM)
+            except (OSError, RuntimeError, ValueError) as exc:
+                state["status"] = "running" if resumed else previous_status
+                state["error"] = str(exc)[:200]
+                write_state(state)
         print(json.dumps(state))
 elif mode == "logs":
     if not STATE.is_file():
@@ -554,7 +672,7 @@ class JobRepository:
                 raise ValueError("only queued jobs can be scheduled")
 
     def set_queued_paused(self, job_id: str, paused: bool) -> str:
-        """Pause or resume a job before dispatch; running processes are never signaled here."""
+        """Pause or resume a job before dispatch without reserving a GPU."""
         value = 1 if paused else 0
         with connect(self.db_path) as db:
             db.execute("BEGIN IMMEDIATE")
@@ -571,6 +689,47 @@ class JobRepository:
                 (job_id, row["status"], "paused" if paused else "resumed", now()),
             )
             return str(row["status"])
+
+    def set_active_paused(self, job_id: str, paused: bool) -> str:
+        """Persist a remote active-job pause while retaining its running state and GPU reservation."""
+        value = 1 if paused else 0
+        with connect(self.db_path) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT status,paused FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            if row["status"] not in {"starting", "running", "unknown"}:
+                raise ValueError("only running managed jobs can be paused or resumed")
+            if int(row["paused"]) == value:
+                return str(row["status"])
+            db.execute("UPDATE jobs SET paused=? WHERE id=?", (value, job_id))
+            db.execute(
+                "INSERT INTO job_events(job_id,status,detail,created_at) VALUES(?,?,?,?)",
+                (job_id, row["status"], "active_paused" if paused else "active_resumed", now()),
+            )
+            return str(row["status"])
+
+    def set_paused(self, job_id: str, paused: bool,
+                   supervisor: RemoteSupervisor | None = None) -> dict[str, object]:
+        """Pause queued work locally or signal only the process tree of a managed active job."""
+        spec, status, _ = self.get(job_id)
+        if status in {"queued", "waiting_gpu"}:
+            state = self.set_queued_paused(job_id, paused)
+            return {"job_id": job_id, "status": state, "paused": paused}
+        if status not in {"starting", "running", "unknown"}:
+            raise ValueError("only queued or running managed jobs can be paused or resumed")
+        remote_control = supervisor or RemoteSupervisor()
+        remote = remote_control.pause(spec) if paused else remote_control.resume(spec)
+        remote_status = str(remote.get("status", "unknown"))
+        if remote_status in {"running", "paused"}:
+            self.set_active_paused(job_id, remote_status == "paused")
+            desired = "paused" if paused else "running"
+            if remote_status == desired and not remote.get("error"):
+                return remote
+            raise RuntimeError(f"remote job remains {remote_status}; requested {desired}")
+        if remote_status in {"succeeded", "failed", "canceled"}:
+            raise ValueError(f"job is already {remote_status}")
+        raise ConnectionError("remote job state is unknown; pause state was not changed")
 
     def active(self) -> list[tuple[JobSpec, str]]:
         with connect(self.db_path) as db:
@@ -732,6 +891,12 @@ class RemoteSupervisor:
 
     def stop(self, spec: JobSpec) -> dict[str, object]:
         return self._call(spec.host, spec.remote_id or spec.id, "stop")
+
+    def pause(self, spec: JobSpec) -> dict[str, object]:
+        return self._call(spec.host, spec.remote_id or spec.id, "pause")
+
+    def resume(self, spec: JobSpec) -> dict[str, object]:
+        return self._call(spec.host, spec.remote_id or spec.id, "resume")
 
     def logs(self, spec: JobSpec) -> str:
         """Return a bounded UTF-8 replacement-decoded tail from this managed job only."""

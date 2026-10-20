@@ -188,6 +188,11 @@ class QueueDispatcher:
             if remote_status in {"running", "succeeded", "failed", "canceled", "unknown"} \
                     and remote_status != current:
                 self.repository.transition(spec.id, remote_status, remote.get("exit_code"))
+            if remote_status in {"running", "paused"}:
+                try:
+                    self.repository.set_active_paused(spec.id, remote_status == "paused")
+                except ValueError:
+                    logger.info("job %s changed state while synchronizing pause status", spec.id)
             if remote_status == "running":
                 self._notify_started(spec.id)
                 self._check_gpu_competition(spec)

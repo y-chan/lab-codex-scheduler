@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ from lab_codex_scheduler.discord_bot import (
 )
 import discord
 from lab_codex_scheduler.discord_state import DiscordPolicy
+from lab_codex_scheduler.db import connect
 from lab_codex_scheduler.jobs import JobRepository, JobSpec
 from lab_codex_scheduler.proposals import _scalar_context
 
@@ -130,13 +132,28 @@ class DiscordBotConstructionTests(unittest.TestCase):
         class Response:
             def __init__(self):
                 self.message = None
+                self.deferred = False
 
             async def send_message(self, message, **kwargs):
+                self.message = message
+
+            async def defer(self, **kwargs):
+                self.deferred = True
+
+            def is_done(self):
+                return self.deferred
+
+        class Followup:
+            def __init__(self):
+                self.message = None
+
+            async def send(self, message, **kwargs):
                 self.message = message
 
         response = Response()
         interaction = SimpleNamespace(
             user=SimpleNamespace(id=123), guild_id=1, channel_id=2, response=response,
+            followup=Followup(),
         )
         queue_command = next(command for command in bot.tree.get_commands()
                              if command.name == "queue")
@@ -155,11 +172,33 @@ class DiscordBotConstructionTests(unittest.TestCase):
         resume_command = next(command for command in bot.tree.get_commands()
                               if command.name == "resume")
         asyncio.run(pause_command.callback(interaction, spec.id))
-        self.assertIn("一時停止しました", response.message)
+        self.assertIn("一時停止しました", interaction.followup.message)
         self.assertEqual(repository.next_queued(), [])
         asyncio.run(resume_command.callback(interaction, spec.id))
-        self.assertIn("再開しました", response.message)
+        self.assertIn("再開しました", interaction.followup.message)
         self.assertEqual([row["id"] for row in repository.next_queued()], [spec.id])
+
+        repository.transition(spec.id, "starting")
+        repository.transition(spec.id, "running")
+
+        class Supervisor:
+            def pause(self, job):
+                return {"job_id": job.id, "status": "paused"}
+
+            def resume(self, job):
+                return {"job_id": job.id, "status": "running"}
+
+        with patch("lab_codex_scheduler.jobs.RemoteSupervisor", return_value=Supervisor()):
+            asyncio.run(pause_command.callback(interaction, spec.id))
+            self.assertIn("実行中ジョブ", interaction.followup.message)
+            self.assertIn("状態: paused", interaction.followup.message)
+            asyncio.run(resume_command.callback(interaction, spec.id))
+            self.assertIn("実行中ジョブ", interaction.followup.message)
+            self.assertIn("状態: running", interaction.followup.message)
+        with connect(root / "state.sqlite3") as db:
+            self.assertEqual(db.execute(
+                "SELECT status,paused FROM jobs WHERE id=?", (spec.id,),
+            ).fetchone()[:], ("running", 0))
 
     def test_completion_artifact_selection_is_bounded_and_skips_logs_and_checkpoints(self):
         items = [

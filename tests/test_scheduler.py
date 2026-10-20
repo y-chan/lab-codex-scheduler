@@ -274,6 +274,34 @@ workdir = "/workspace"
         self.assertIsNone(reservations.for_job(spec.id))
         self.assertEqual(repo.get(spec.id)[1:], ("succeeded", 0))
 
+    def test_reconcile_persists_active_pause_without_releasing_gpu_reservation(self) -> None:
+        spec = JobSpec("paused-running-job", "train", "gpu-a", ("sleep", "10"), "/workspace", {})
+        repo = JobRepository(str(self.db_path))
+        repo.create(spec, "hash")
+        repo.transition(spec.id, "starting")
+        repo.transition(spec.id, "running")
+        reservations = GPUReservationStore(self.db_path)
+        self.assertTrue(reservations.acquire("gpu-a", "GPU-uuid", spec.id))
+        supervisor = FakeSupervisor()
+        supervisor.remote_status = {"status": "paused"}
+        dispatcher = QueueDispatcher(
+            self.db_path, self.config_path, probe=lambda host: [], supervisor=supervisor,
+        )
+
+        dispatcher.reconcile_active()
+
+        with connect(self.db_path) as db:
+            row = db.execute("SELECT status,paused FROM jobs WHERE id=?", (spec.id,)).fetchone()
+        self.assertEqual(tuple(row), ("running", 1))
+        self.assertEqual(reservations.for_job(spec.id), ("gpu-a", "GPU-uuid"))
+
+        supervisor.remote_status = {"status": "running"}
+        dispatcher.reconcile_active()
+        with connect(self.db_path) as db:
+            row = db.execute("SELECT status,paused FROM jobs WHERE id=?", (spec.id,)).fetchone()
+        self.assertEqual(tuple(row), ("running", 0))
+        self.assertEqual(reservations.for_job(spec.id), ("gpu-a", "GPU-uuid"))
+
     def test_service_cycle_polls_configured_hosts_and_dispatches_once(self) -> None:
         dispatcher = CycleDispatcher()
         service = SchedulerService(self.db_path, self.config_path, 30, dispatcher=dispatcher)

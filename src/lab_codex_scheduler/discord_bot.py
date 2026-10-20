@@ -985,7 +985,7 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
             view=CancelJobView(interaction.user.id, perform_cancel), ephemeral=True,
         )
 
-    async def set_queue_pause(interaction: discord.Interaction, job_id: str, paused: bool) -> None:
+    async def set_job_pause(interaction: discord.Interaction, job_id: str, paused: bool) -> None:
         if not await authorize(interaction):
             return
         try:
@@ -1000,25 +1000,31 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
                     "依頼者本人のジョブだけ変更できます。", ephemeral=True,
                 )
                 return
-            state = JobRepository(str(db_path)).set_queued_paused(job_id, paused)
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            state = await asyncio.to_thread(
+                JobRepository(str(db_path)).set_paused, job_id, paused,
+            )
             action = "一時停止しました" if paused else "再開しました"
-            await interaction.response.send_message(
-                f"GPU待ちジョブ `{job_id}` を{action}（状態: {state}）。", ephemeral=True,
+            scope = "実行中ジョブ" if state.get("status") in {"running", "paused"} else "GPU待ちジョブ"
+            await interaction.followup.send(
+                f"{scope} `{job_id}` を{action}（状態: {state.get('status', 'unknown')}）。",
+                ephemeral=True,
             )
-        except (KeyError, ValueError) as exc:
-            await interaction.response.send_message(
-                f"変更できません: {str(exc)[:1000]}", ephemeral=True,
-            )
+        except (KeyError, ValueError, ConnectionError, RuntimeError) as exc:
+            if interaction.response.is_done():
+                await interaction.followup.send(f"変更できません: {str(exc)[:1000]}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"変更できません: {str(exc)[:1000]}", ephemeral=True)
 
-    @bot.tree.command(name="pause", description="依頼者のGPU待ちジョブを一時停止")
-    @app_commands.describe(job_id="依頼者本人の待機ジョブUUID")
+    @bot.tree.command(name="pause", description="依頼者の待機中または実行中ジョブを一時停止")
+    @app_commands.describe(job_id="依頼者本人の管理対象ジョブUUID")
     async def pause(interaction: discord.Interaction, job_id: str) -> None:
-        await set_queue_pause(interaction, job_id, True)
+        await set_job_pause(interaction, job_id, True)
 
-    @bot.tree.command(name="resume", description="一時停止したGPU待ちジョブを再開")
-    @app_commands.describe(job_id="依頼者本人の一時停止ジョブUUID")
+    @bot.tree.command(name="resume", description="依頼者の一時停止ジョブを再開")
+    @app_commands.describe(job_id="依頼者本人の管理対象ジョブUUID")
     async def resume(interaction: discord.Interaction, job_id: str) -> None:
-        await set_queue_pause(interaction, job_id, False)
+        await set_job_pause(interaction, job_id, False)
 
     @bot.tree.command(name="job", description="ジョブIDの状態と実行環境を表示")
     @app_commands.describe(job_id="ジョブUUID")

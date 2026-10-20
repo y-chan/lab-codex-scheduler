@@ -106,6 +106,50 @@ class DatabaseJobTests(unittest.TestCase):
         self.assertEqual(repo.set_queued_paused(spec.id, False), "queued")
         self.assertEqual([row["id"] for row in repo.next_queued()], [spec.id])
 
+    def test_active_pause_is_persistent_without_releasing_running_status(self) -> None:
+        repo = JobRepository(str(self.path))
+        spec = JobSpec("00000000-0000-0000-0000-000000000024", "env", "gpu", ("true",), "/work", {})
+        repo.create(spec, "hash")
+        repo.transition(spec.id, "starting")
+        repo.transition(spec.id, "running")
+        self.assertEqual(repo.set_active_paused(spec.id, True), "running")
+        with connect(self.path) as db:
+            row = db.execute("SELECT status,paused FROM jobs WHERE id=?", (spec.id,)).fetchone()
+            self.assertEqual(tuple(row), ("running", 1))
+            self.assertEqual(db.execute(
+                "SELECT detail FROM job_events WHERE job_id=? ORDER BY event_id", (spec.id,),
+            ).fetchall()[-1][0], "active_paused")
+        self.assertEqual(repo.set_active_paused(spec.id, False), "running")
+        repo.transition(spec.id, "succeeded", exit_code=0)
+        with connect(self.path) as db:
+            self.assertEqual(db.execute("SELECT paused FROM jobs WHERE id=?", (spec.id,)).fetchone()[0], 0)
+
+    def test_pause_routes_active_jobs_through_remote_supervisor(self) -> None:
+        class Remote:
+            def __init__(self):
+                self.calls = []
+
+            def pause(self, spec):
+                self.calls.append(("pause", spec.id))
+                return {"job_id": spec.id, "status": "paused"}
+
+            def resume(self, spec):
+                self.calls.append(("resume", spec.id))
+                return {"job_id": spec.id, "status": "running"}
+
+        repo = JobRepository(str(self.path))
+        spec = JobSpec("00000000-0000-0000-0000-000000000025", "env", "gpu", ("true",), "/work", {})
+        repo.create(spec, "hash")
+        repo.transition(spec.id, "starting")
+        repo.transition(spec.id, "running")
+        remote = Remote()
+        self.assertEqual(repo.set_paused(spec.id, True, remote)["status"], "paused")
+        self.assertEqual(repo.set_paused(spec.id, False, remote)["status"], "running")
+        self.assertEqual(remote.calls, [("pause", spec.id), ("resume", spec.id)])
+        with connect(self.path) as db:
+            row = db.execute("SELECT status,paused FROM jobs WHERE id=?", (spec.id,)).fetchone()
+        self.assertEqual(tuple(row), ("running", 0))
+
     def test_paused_job_cannot_transition_to_starting_and_cancel_clears_pause(self) -> None:
         repo = JobRepository(str(self.path))
         spec = JobSpec("00000000-0000-0000-0000-000000000023", "env", "gpu", ("true",), "/work", {})
