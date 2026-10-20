@@ -208,6 +208,19 @@ class DiscordBotConstructionTests(unittest.TestCase):
             def is_done(self):
                 return self.deferred
 
+        first_interaction = SimpleNamespace(
+            id=9001, command=SimpleNamespace(qualified_name="submit"),
+            user=SimpleNamespace(id=123), response=Response(),
+        )
+        duplicate_response = Response()
+        duplicate_interaction = SimpleNamespace(
+            id=9001, command=SimpleNamespace(qualified_name="submit"),
+            user=SimpleNamespace(id=123), response=duplicate_response,
+        )
+        self.assertTrue(asyncio.run(bot.tree.interaction_check(first_interaction)))
+        self.assertFalse(asyncio.run(bot.tree.interaction_check(duplicate_interaction)))
+        self.assertIn("既に受け付け済み", duplicate_response.message)
+
         class Followup:
             def __init__(self):
                 self.message = None

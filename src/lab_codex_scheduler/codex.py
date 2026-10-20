@@ -55,8 +55,10 @@ class CodexAppServer:
         return self.process is not None and self.process.returncode is None
 
     async def start(self) -> None:
-        if self.running:
+        if self.running and self._closed_error is None:
             return
+        if self.process is not None:
+            await self.close()
         try:
             self.process = await asyncio.create_subprocess_exec(
                 *self.command,
@@ -69,6 +71,9 @@ class CodexAppServer:
         self._closed_error = None
         self._loaded_threads.clear()
         self._active_turns.clear()
+        # A process restart starts a new protocol stream. Events left over from
+        # the previous process must not complete a turn in the new session.
+        self._event_queues = defaultdict(asyncio.Queue)
         self._reader = asyncio.create_task(self._read_stdout(), name="codex-app-server-reader")
         self._stderr = asyncio.create_task(self._read_stderr(), name="codex-app-server-stderr")
         try:
@@ -177,6 +182,11 @@ class CodexAppServer:
             turn_id = initial.get("id") if isinstance(initial, dict) else None
             if isinstance(turn_id, str):
                 self._active_turns[turn_id] = thread_id
+                # The reader can observe EOF immediately after delivering the
+                # turn/start reply, before this task resumes and registers it.
+                if self._closed_error is not None:
+                    self._active_turns.pop(turn_id, None)
+                    raise CodexError(f"Codex app-server closed during turn: {self._closed_error}")
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=timeout)
@@ -184,6 +194,12 @@ class CodexAppServer:
                     if isinstance(turn_id, str):
                         self._active_turns.pop(turn_id, None)
                     raise CodexError(f"Codex turn timed out after {timeout:g} seconds") from exc
+                if event.get("method") == "codex/appServerClosed":
+                    if isinstance(turn_id, str):
+                        self._active_turns.pop(turn_id, None)
+                    params = event.get("params", {})
+                    detail = params.get("error") if isinstance(params, dict) else None
+                    raise CodexError(f"Codex app-server closed during turn: {detail or 'unknown error'}")
                 event_thread = _event_thread_id(event)
                 event_turn = _event_turn_id(event)
                 if event_thread not in (None, thread_id):
@@ -263,7 +279,7 @@ class CodexAppServer:
                         name=f"codex-server-request-{request_id}",
                     )
                     self._server_request_tasks.add(task)
-                    task.add_done_callback(self._server_request_tasks.discard)
+                    task.add_done_callback(self._server_request_finished)
                     continue
                 if method == "item/fileChange/patchUpdated":
                     thread_id = params.get("threadId")
@@ -296,6 +312,12 @@ class CodexAppServer:
         finally:
             if self._closed_error is None:
                 self._closed_error = CodexError("Codex app-server closed its output")
+            closed_event = {
+                "method": "codex/appServerClosed",
+                "params": {"error": str(self._closed_error)},
+            }
+            for thread_id in set(self._active_turns.values()):
+                await self._event_queues[thread_id].put(closed_event)
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(CodexError(str(self._closed_error)))
@@ -321,6 +343,17 @@ class CodexAppServer:
         if response is None:
             response = {"decision": "decline"}
         await self._write({"id": request_id, "result": response})
+
+    def _server_request_finished(self, task: asyncio.Task[None]) -> None:
+        self._server_request_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            LOG.error(
+                "Codex app-server request handler failed",
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
     async def _read_stderr(self) -> None:
         assert self.process is not None and self.process.stderr is not None

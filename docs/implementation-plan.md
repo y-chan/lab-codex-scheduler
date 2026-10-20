@@ -1,12 +1,12 @@
 # 実装計画と受け入れ条件
 
-各Phaseは前段の永続形式を壊さず追加します。単体・ローカル統合検証は実行済みですが、実ホスト、Discord Gateway、実Codexログイン、運用データを使う受け入れ試験は未実施です。
+各Phaseは前段の永続形式を壊さず追加します。単体・ローカル統合検証は実行済みです。開発端末では実Codexログインを使ったTurn/resumeも確認しました。実ホスト、Discord Gateway、GPU利用、配備後の再起動や運用データを使う受け入れ試験は未実施です。
 
 ## Phase 1：基礎設計とSSH実行基盤
 
 状態：オフライン実装とローカル検証を完了。実GPUサーバーへの疎通、配備先での再起動・終了状態照合は未実施。
 
-実装：OpenSSH Host解決、TOML環境定義、拡張登録可能なExecutionAdapter ProtocolとDocker/uv/venv/native adapter、SQLiteスキーマ、ジョブID単位のDetached Supervisor、stdout/stderr、終了コード、状態不明、再照会。GPU割当後に実行環境のGit SHAと追跡ファイルのdirty状態をbest-effort取得し、job/attemptに保存。Git情報を取得できなくても起動は継続します。独自adapterの登録・設定読込・実行argvをGPUなしテストで検証。
+実装：OpenSSH Host解決、TOML環境定義、拡張登録可能なExecutionAdapter ProtocolとDocker/uv/venv/native adapter、SQLiteスキーマ、`db-backup`によるOnline Backup API経由の整合snapshot、integrity check、0600作成、既存ファイル非上書き、ジョブID単位のDetached Supervisor、stdout/stderr、終了コード、状態不明、再照会。GPU割当後に実行環境のGit SHAと追跡ファイルのdirty状態をbest-effort取得し、job/attemptに保存。Git情報を取得できなくても起動は継続します。独自adapterの登録・設定読込・実行argvをGPUなしテストで検証。
 
 受け入れ：不正設定は接続前に拒否。Host表示はSSH設定を変更しない。同一UUIDで二重起動しない。通信断を即時失敗とせずUNKNOWNに保つ。ジョブIDに限定した停止。偽transportで起動・照会・停止・ログ解析を検証。
 
@@ -26,7 +26,7 @@
 
 状態：Bot、認可、Commands、スレッド会話処理、通知outbox worker、成果物取得、永続計画承認を実装。ローカルでClient構築を検証。Discordへの接続とGuild上のInteractions動作確認は未実施。
 
-実装：`/status`、`/gpu`、`/queue`、`/submit`、`/sweep`、`/job`、`/depend`、`/cancel`、`/pause`、`/resume`、`/schedule`、`/logs`、`/plot`、`/tb-media`、`/artifacts`、`/artifact`、`/audio-utterances`、`/compare-audio`、`/plan`、`/report`、`/new-conversation`、`/instructions`、`/instructions-history`、`/instructions-restore`。`/new-conversation`は許可されたText/Forum Channelまたはその配下のThreadから、最初の依頼付きで新しいDiscord/Codex会話を作ります。許可IDによる認可、Message ID重複受付防止、既存Codex会話のmarker復旧、`LAB_CDS_DISCORD_REQUIRE_MENTION`による既存Thread限定のメンション省略、受信添付の署名/Guildサイズ確認、依頼者限定の停止・承認ボタン。開始/期限/終端/日次通知はoutboxを経由して依頼者へ限定メンション。
+実装：`/status`、`/gpu`、`/queue`、`/submit`、`/sweep`、`/job`、`/depend`、`/cancel`、`/pause`、`/resume`、`/schedule`、`/logs`、`/plot`、`/tb-media`、`/artifacts`、`/artifact`、`/audio-utterances`、`/compare-audio`、`/plan`、`/report`、`/new-conversation`、`/instructions`、`/instructions-history`、`/instructions-restore`。`/new-conversation`は許可されたText/Forum Channelまたはその配下のThreadから、最初の依頼付きで新しいDiscord/Codex会話を作ります。許可IDによる認可、Message IDとSlash Command Interaction IDの永続的な重複受付防止、既存Codex会話のmarker復旧、`LAB_CDS_DISCORD_REQUIRE_MENTION`による既存Thread限定のメンション省略、受信添付の署名/Guildサイズ確認、依頼者限定の停止・承認ボタン。開始/期限/終端/日次通知はoutboxを経由して依頼者へ限定メンション。
 
 成果物取得はジョブUUID配下、登録環境のartifact_dir、拡張子allowlist、サイズ制限、symlink拒否を適用。Checkpointは許可していません。成功通知では許可済み小型成果物を最大3件、自動添付します。
 
@@ -36,7 +36,7 @@
 
 ## Phase 4：Codex app-server
 
-状態：stdio JSONL JSON-RPC Client、initialize/thread start/resume/turn、streaming、Thread単位直列化、期限、承認応答、構造化実験計画を実装。偽app-serverでプロトコルテスト済み。開発環境のCodex CLI 0.162.1が生成するJSON Schemaと照合し、`thread/start.sandbox`のread-only値の不一致を修正。隔離した一時`CODEX_HOME`で実CLIのinitializeとread-only `thread/start`まで結合確認済み。Turn/resume、認証、モデル応答、Approval UI結合は未確認。
+状態：stdio JSONL JSON-RPC Client、initialize/thread start/resume/turn、streaming、Thread単位直列化、期限、承認応答、構造化実験計画を実装。偽app-serverでプロトコルテスト済み。開発環境のCodex CLI 0.162.1が生成するJSON Schemaと照合し、`thread/start.sandbox`のread-only値の不一致を修正。2026-10-21に実ログイン済みCLIでread-onlyのTurnを実行し、別app-serverプロセスで同一Threadをresumeして2つ目のTurn完了まで確認。Turn中のapp-server EOFが最長2時間待ちになる経路を修正し、即時失敗テストを追加。偽app-serverで承認要求の非同期応答も検証。Discord上のApproval UI結合と制御サーバーへの配備は未確認。
 
 実装：会話用指示を各Turnに適用、画像/音声をlocalImage/localAudioとして送信、テキスト添付は文字数上限付きでinline、turn output schemaに沿って計画候補を作る。shellコマンド、未登録環境、環境IDだけでなくproposal時点から変更された実行環境を拒否。承認前にジョブを作らない。Codexのワークスペース書込みは既定無効、ネットワークアクセス無効。
 
@@ -56,6 +56,6 @@
 2. Discord Botのtoken、Message Content Intent、User/Guild/Channel allowlistを設定し、検証用GuildでCommandを同期。
 3. 制御サーバーのCodex CLIを認証し、read-only状態でapp-serverを接続確認。
 4. GPU取得とDiscord停止操作は、専用の検証ジョブと小さい空き閾値で運用者が確認。
-5. バックアップ/保持期間/障害通知を確定してから常時稼働へ移す。
+5. 手動のDB snapshot機能はある。定期実行、別媒体への複製、保持期間、復元訓練、障害通知を運用要件に合わせて確定してから常時稼働へ移す。
 
 Slurm、Kubernetes、Redis、PostgreSQL、GitHub Issues連携は、SQLite単一制御ノードの制約が確認されるまで導入しません。

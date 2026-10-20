@@ -96,3 +96,15 @@ systemctl --user status lab-codex-scheduler.service lab-codex-discord.service
 ```
 
 常時稼働にはユーザーマネージャーのlinger、SSH鍵の読み取り、known_hosts登録、Codex CLI認証、systemdの書込パス/サンドボックス設定が必要です。実GPU/Discord接続を伴うため、検証Guildと検証ジョブで確認してから有効化してください。
+
+## SQLite状態DBのバックアップ
+
+`db-backup`はSQLite Online Backup APIで整合したスナップショットを作成し、integrity checkを通したファイルだけを保存します。出力先は既存ファイルを上書きせず、owner限定の`0600`で作成します。バックアップ先ディレクトリは事前に作成してください。
+
+```sh
+install -d -m 700 ~/.local/share/lab-codex-scheduler/backups
+uv run --locked lab-codex-scheduler db-backup \
+  ~/.local/share/lab-codex-scheduler/backups/scheduler-$(date +%Y%m%d-%H%M%S).sqlite3
+```
+
+このコマンドは手動スナップショットです。バックアップ先の別媒体への同期、定期実行、保持期間、復元手順は運用環境の保存要件を確認して設定してください。source DBをサービス停止なしで読むため、OS上でファイルを直接copyする方法は使いません。

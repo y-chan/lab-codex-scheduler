@@ -53,6 +53,16 @@ class DiscordStore:
             )
             return result.rowcount == 1
 
+    def claim_interaction(self, interaction_id: str, command_name: str, user_id: str) -> bool:
+        """Claim a Discord application command once across delivery retries/restarts."""
+        with connect(self.path) as db:
+            result = db.execute(
+                "INSERT OR IGNORE INTO discord_interactions("
+                "interaction_id,command_name,user_id,received_at) VALUES(?,?,?,?)",
+                (interaction_id, command_name, user_id, utc_now()),
+            )
+            return result.rowcount == 1
+
     def finish_event(self, message_id: str, error: str | None = None) -> None:
         state = "failed" if error else "processed"
         with connect(self.path) as db:

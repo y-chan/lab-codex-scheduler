@@ -383,6 +383,22 @@ def build_bot(db_path: str | Path, inbox_dir: str | Path, instruction_dir: str |
     intents.message_content = True
     bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
     access = policy or policy_from_env()
+
+    async def claim_application_command(interaction: discord.Interaction) -> bool:
+        command = getattr(interaction, "command", None)
+        command_name = str(getattr(command, "qualified_name", "unknown"))
+        if store.claim_interaction(
+            str(interaction.id), command_name, str(interaction.user.id),
+        ):
+            return True
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "このDiscord操作は既に受け付け済みです。状態確認コマンドで現在の状態を確認してください。",
+                ephemeral=True,
+            )
+        return False
+
+    bot.tree.interaction_check = claim_application_command
     project_root = Path(os.environ.get("LAB_CDS_CODEX_WORKDIR", Path.cwd())).expanduser().resolve()
     instruction_root = Path(instruction_dir).expanduser().resolve()
     write_enabled = os.environ.get("LAB_CDS_CODEX_WORKSPACE_WRITE", "0") == "1"

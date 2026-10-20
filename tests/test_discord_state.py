@@ -40,6 +40,14 @@ class DiscordStoreTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.store.finish_event("missing")
 
+    def test_application_command_interaction_is_claimed_once(self):
+        self.assertTrue(self.store.claim_interaction("1001", "submit", "user-1"))
+        self.assertFalse(self.store.claim_interaction("1001", "submit", "user-1"))
+        self.assertFalse(self.store.claim_interaction("1001", "cancel", "user-2"))
+        with connect(self.db) as db:
+            rows = db.execute("SELECT interaction_id,command_name,user_id FROM discord_interactions").fetchall()
+        self.assertEqual([tuple(row) for row in rows], [("1001", "submit", "user-1")])
+
     def test_failed_event_can_only_be_retried_after_explicit_confirmation(self):
         self.assertTrue(self.store.accept_event("m2", {"content": "original"}))
         self.assertFalse(self.store.retry_failed_event("m2", {"content": "retry"}))

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -165,6 +167,12 @@ def initialize(path: str | Path) -> None:
                 processed_at TEXT,
                 error TEXT
             );
+            CREATE TABLE IF NOT EXISTS discord_interactions (
+                interaction_id TEXT PRIMARY KEY,
+                command_name TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                received_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS experiment_plans (
                 plan_id TEXT PRIMARY KEY,
                 discord_thread_id TEXT NOT NULL,
@@ -232,3 +240,36 @@ def initialize(path: str | Path) -> None:
             "selected_gpu,exit_code,created_at,started_at,finished_at FROM jobs"
         )
         db.execute("UPDATE schema_meta SET version=?", (SCHEMA_VERSION,))
+
+
+def backup_database(source_path: str | Path, destination_path: str | Path) -> Path:
+    """Create and verify a consistent SQLite snapshot without replacing files."""
+    source = Path(source_path).expanduser().resolve(strict=True)
+    requested_destination = Path(destination_path).expanduser()
+    destination = requested_destination.resolve()
+    if source == destination:
+        raise ValueError("backup destination must differ from the source database")
+    if requested_destination.exists() or requested_destination.is_symlink():
+        raise FileExistsError(f"backup destination already exists: {requested_destination}")
+    if not destination.parent.is_dir():
+        raise FileNotFoundError(f"backup directory does not exist: {destination.parent}")
+    descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    os.close(descriptor)
+    try:
+        with closing(sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True, timeout=30)) as source_db, \
+                closing(sqlite3.connect(destination, timeout=30)) as backup_db:
+            source_db.backup(backup_db)
+            result = backup_db.execute("PRAGMA integrity_check").fetchone()
+            if result is None or result[0] != "ok":
+                raise RuntimeError(f"SQLite backup integrity check failed: {result}")
+            row = backup_db.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
+            if row is None or row[0] != SCHEMA_VERSION:
+                raise RuntimeError("SQLite backup has an unexpected schema version")
+    except sqlite3.Error as exc:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError(f"SQLite backup failed: {exc}") from exc
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    os.chmod(destination, 0o600)
+    return destination

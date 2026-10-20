@@ -53,6 +53,7 @@ SSHセッション内で学習プロセスを直接実行しません。リモ�
 - `gpu_snapshots`：Host、GPU UUID、型式、VRAM、利用率、プロセス、観測時刻。
 - `discord_sessions`：Guild、親Channel、Discord Thread、Codex Thread、開始ユーザー、最終時刻、設定ハッシュ、状態。
 - `discord_inbox`：Discord Message IDによる重複受付防止と処理結果。
+- `discord_interactions`：Slash Command Interaction IDの一意受付。再配送時に`/submit`などの操作を二重実行しません。
 - `notifications`：一意イベントキー、送信先、本文、配送状態、lease時刻。障害後にlease期限切れを再試行します。
 
 待機ジョブのpauseは`jobs.paused`に保存し、dispatch候補から除外します。実行中ジョブは依頼者のDiscord `/pause`・`/resume`またはCLI操作で、管理対象プロセスだけへSIGSTOP/SIGCONTを送ります。実行中のpauseではGPU予約を保持するため、他ジョブへ同じGPUを割り当てません。Dockerは`LAB_CDS_JOB_ID`が一致するプロセスだけへsignalを送り、コンテナ全体には作用させません。停止操作もpause中のジョブをresumeしてから管理対象プロセスを終了します。
@@ -69,7 +70,7 @@ GPU UUIDを永続識別子にします。NVIDIAの列挙順は再起動で変わ
 
 ## Discord会話とCodex Thread
 
-正本はSQLiteの `discord_threads` です。新規メンションでは通常テキストChannelにスレッドを作成してからCodex `thread/start` を行います。Forumでは投稿ThreadのIDを会話キーにします。既存Threadのメンションは保存済み対応を優先し、Codex Threadをresumeします。
+正本はSQLiteの `discord_sessions` です。新規メンションでは通常テキストChannelにスレッドを作成してからCodex `thread/start` を行います。Forumでは投稿ThreadのIDを会話キーにします。既存Threadのメンションは保存済み対応を優先し、Codex Threadをresumeします。
 
 DB対応がないスレッドは別のCodex会話へ自動接続しません。Botが投稿した識別Embed markerが履歴に見つかる場合だけ対応を復旧し、複数markerなど曖昧な場合は復旧しません。markerのない旧スレッド、または保存したCodex Threadをapp-serverが再開できない場合は、依頼者限定の確認ボタンから新Threadを作り、元の依頼を再送できます。Threadを付け替える際はDB bindingを旧IDとの比較更新にし、Bot自身のmarkerも更新して履歴上のID競合を避けます。再送は失敗扱いのDiscord Message IDだけを明示確認後に一度再claimします。Forum投稿を含むDiscord Gatewayの実イベント結合試験は未実施です。
 
@@ -101,9 +102,9 @@ DB対応がないスレッドは別のCodex会話へ自動接続しません。B
 
 ## 現行仕様の根拠
 
-2026-10-20に確認した公式資料を、各プロトコル境界の判断に使います。実装時にもバージョンと仕様を再確認します。
+2026-10-21に確認した公式資料を、各プロトコル境界の判断に使います。実装時にもバージョンと仕様を再確認します。
 
-- Codex app-serverはstdio上のJSONLメッセージを使い、initialize後にThreadを開始し、保存したThread IDをresumeできます。[OpenAI Codex app-server連携ガイド](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)、[Codex app-server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
+- Codex app-serverはstdio上のJSONLメッセージを使い、initialize後にThreadを開始し、保存したThread IDをresumeできます。現行CLIが生成したJSON Schemaと実際の`turn/start`、プロセス再起動後の`thread/resume`を照合しました。[OpenAI Codex app-server連携ガイド](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)、[Codex app-server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
 - 現行app-serverのTurn入力型はtext、localImage、localAudioを含み、Turn開始にはJSON Schemaによる出力制約があります。[Codex app-server Turn protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/turn.rs)
 - Discord Slash CommandはCHAT_INPUTのApplication Commandであり、Forum投稿作成は通常のChannel thread作成とは別のAPI形式です。[Application Commands](https://docs.discord.com/developers/interactions/application-commands)、[Channel resource](https://docs.discord.com/developers/resources/channel)、[Threads](https://docs.discord.com/developers/topics/threads)
 - Discord添付上限は利用状況で変わり、Interactionには `attachment_size_limit` が渡されます。[Discord API reference](https://docs.discord.com/developers/reference)
@@ -126,4 +127,4 @@ DB対応がないスレッドは別のCodex会話へ自動接続しません。B
 
 Controller、GPUキュー、SQLite、試行履歴付き期限/再試行、依存ジョブ登録、CLI、Discord Bot、Codex app-server JSONL client、承認後の計画登録、開始/期限/終端/日次通知、bounded artifact fetch、発話単位音声manifest、TensorBoard event fileの限定的なリモート同期と常駐scalar監視、EventAccumulator解析・図生成を実装しました。テストは偽SSH transport、偽app-server、synthetic TensorBoard event fileで実行します。
 
-実Discord Gateway、実Codexログイン/モデル、実SSH Host/GPU、Dockerコンテナ、長時間連続稼働への接続確認はしていません。期限通知は依存DAGの後続ジョブを最大12件表示します。同一環境・設定・UUID正規化argvの成功履歴が3件以上あるジョブについて、中央値から依存クリティカルパスの計算時間を見積もります。GPU待機・競合は予測対象外で、履歴不足の場合は見込みを出しません。Codexの次案生成は環境ごとの明示opt-inで評価完了後に動作し、提案元evaluation IDに一意に紐付き、承認前にジョブを作りません。次案の自動採用は未実装です。条件スイープはCLI/Discordから最大100件を原子的に登録できます。TensorBoard image/audioは原形式のままサイズ制限付きでDiscord取得できます。環境に任意の`evaluation_command` argvテンプレートを設定すると、成功したexperimentから一度だけ評価ジョブを作成します。親成功状態と追跡行をSQLite transactionで照合し、再起動後も重複しません。Discord履歴markerによる復旧はBotが投稿したmarkerに限られ、旧スレッドの曖昧な対応は復旧せず、依頼者確認ボタンで元の依頼を新しいCodex Threadへ送ります。TensorBoard同期は環境の`log_dir/<job UUID>`のみを読み、1ファイル16 MiB・1 cycle 32 MiBを上限とします。
+開発端末では実Codexログインを使ったモデル応答、app-server再起動後のThread resumeを確認しました。実Discord Gateway、Discord Approval UI、実SSH Host/GPU、Dockerコンテナ、長時間連続稼働への接続確認はしていません。期限通知は依存DAGの後続ジョブを最大12件表示します。同一環境・設定・UUID正規化argvの成功履歴が3件以上あるジョブについて、中央値から依存クリティカルパスの計算時間を見積もります。GPU待機・競合は予測対象外で、履歴不足の場合は見込みを出しません。Codexの次案生成は環境ごとの明示opt-inで評価完了後に動作し、提案元evaluation IDに一意に紐付き、承認前にジョブを作りません。次案の自動採用は未実装です。条件スイープはCLI/Discordから最大100件を原子的に登録できます。TensorBoard image/audioは原形式のままサイズ制限付きでDiscord取得できます。環境に任意の`evaluation_command` argvテンプレートを設定すると、成功したexperimentから一度だけ評価ジョブを作成します。親成功状態と追跡行をSQLite transactionで照合し、再起動後も重複しません。Discord履歴markerによる復旧はBotが投稿したmarkerに限られ、旧スレッドの曖昧な対応は復旧せず、依頼者確認ボタンで元の依頼を新しいCodex Threadへ送ります。TensorBoard同期は環境の`log_dir/<job UUID>`のみを読み、1ファイル16 MiB・1 cycle 32 MiBを上限とします。

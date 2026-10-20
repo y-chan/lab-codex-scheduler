@@ -5,7 +5,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from lab_codex_scheduler.db import connect, initialize
+from lab_codex_scheduler.db import SCHEMA_VERSION, connect, initialize
 from lab_codex_scheduler.jobs import JobRepository, JobSpec
 
 
@@ -220,7 +220,7 @@ class DatabaseJobTests(unittest.TestCase):
         with closing(sqlite3.connect(self.path)) as db:
             version = db.execute("SELECT version FROM schema_meta").fetchone()[0]
             columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
-        self.assertEqual(version, 12)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertTrue({"priority", "gpu_request_json", "job_kind"}.issubset(columns))
 
     def test_schema_v9_migrates_proposal_source_identity(self) -> None:
@@ -234,7 +234,7 @@ class DatabaseJobTests(unittest.TestCase):
         with connect(self.path) as db:
             version = db.execute("SELECT version FROM schema_meta").fetchone()[0]
             columns = {row["name"] for row in db.execute("PRAGMA table_info(experiment_plans)")}
-        self.assertEqual(version, 12)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertIn("source_evaluation_job_id", columns)
         with connect(self.path) as db:
             attempt_columns = {row["name"] for row in db.execute("PRAGMA table_info(job_attempts)")}
@@ -249,8 +249,19 @@ class DatabaseJobTests(unittest.TestCase):
             version = db.execute("SELECT version FROM schema_meta").fetchone()[0]
             paused = db.execute("PRAGMA table_info(jobs)").fetchall()
             column = next(row for row in paused if row["name"] == "paused")
-        self.assertEqual(version, 12)
+        self.assertEqual(version, SCHEMA_VERSION)
         self.assertEqual(column["dflt_value"], "0")
+
+    def test_schema_v12_adds_discord_interaction_dedupe(self) -> None:
+        with connect(self.path) as db:
+            db.execute("DROP TABLE discord_interactions")
+            db.execute("UPDATE schema_meta SET version=12")
+        initialize(self.path)
+        with connect(self.path) as db:
+            version = db.execute("SELECT version FROM schema_meta").fetchone()[0]
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(discord_interactions)")}
+        self.assertEqual(version, SCHEMA_VERSION)
+        self.assertEqual(columns, {"interaction_id", "command_name", "user_id", "received_at"})
 
 
 if __name__ == "__main__":

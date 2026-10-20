@@ -7,7 +7,7 @@ systemd user serviceの雛形は [`docs/deployment.md`](docs/deployment.md) に�
 
 ## 開発状態
 
-Phase 1〜5のローカル実装を進めており、SSH実行基盤、GPUキュー、Discord・Codex接続コード、TensorBoard同期・解析・media取得、期限・再試行・依存ジョブ、日次通知、条件スイープ、音声manifestによる発話比較を含みます。偽SSH transport、偽app-server、SQLite、synthetic TensorBoard event fileで検証します。Discord Gateway、実Codexログイン、実SSH/GPUホストでの結合・配備試験は未実施です。評価ジョブは環境の`evaluation_command`で成功後に自動登録でき、期限通知は依存する後続ジョブを作業リストとして表示します。同一環境・設定・UUID正規化argvの成功履歴が3件以上ある場合、中央値から依存経路の計算時間を推定します。GPU待ち時間は含めず、履歴不足時は予測しません。依存ジョブが100件を超える場合は安全側で全体予測を省略します。Discord履歴からの会話復旧はBotが投稿した識別markerがある場合に限り、Forum Gatewayの結合試験は未実施です。
+Phase 1〜5のローカル実装を進めており、SSH実行基盤、GPUキュー、Discord・Codex接続コード、TensorBoard同期・解析・media取得、期限・再試行・依存ジョブ、日次通知、条件スイープ、音声manifestによる発話比較を含みます。偽SSH transport、偽app-server、SQLite、synthetic TensorBoard event fileで検証します。開発端末では実Codexログインによるモデル応答とapp-server再起動後のThread resumeも確認済みです。Discord Gateway、実SSH/GPUホストでの結合・配備試験は未実施です。評価ジョブは環境の`evaluation_command`で成功後に自動登録でき、期限通知は依存する後続ジョブを作業リストとして表示します。同一環境・設定・UUID正規化argvの成功履歴が3件以上ある場合、中央値から依存経路の計算時間を推定します。GPU待ち時間は含めず、履歴不足時は予測しません。依存ジョブが100件を超える場合は安全側で全体予測を省略します。Discord履歴からの会話復旧はBotが投稿した識別markerがある場合に限り、Forum Gatewayの結合試験は未実施です。
 
 ## セットアップ
 
@@ -41,6 +41,8 @@ uv run lab-codex-scheduler db-init
 ```
 
 `hosts` はローカルOpenSSH設定を表示します。`host-test`、`gpu`、`scheduler` は実ホストへ接続する操作です。GPUなしテストはネットワーク接続しません。
+
+SQLiteのバックアップには`db-backup DESTINATION`を使います。SQLite Online Backup APIで整合性を保って複製し、integrity checkに合格した後だけ保存します。出力先が既に存在する場合は上書きしません。定期実行や保持期間は運用環境で決めてください。
 
 ## ジョブ実行
 
